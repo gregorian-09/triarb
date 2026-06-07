@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["ta-core", "ta-feed", "ta-detect", "ta-exec", "ta-sim", "ta-bin"]
+members = ["ta-core", "ta-config", "ta-feed", "ta-detect", "ta-exec", "ta-sim", "ta-bin", "ta-bench"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +21,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dashmap = "6"
 rustc-hash = "2"
+sha2 = "0.10"
+ta-config = { path = "ta-config" }
 ta-core = { path = "ta-core" }
 ta-feed = { path = "ta-feed" }
 ta-detect = { path = "ta-detect" }

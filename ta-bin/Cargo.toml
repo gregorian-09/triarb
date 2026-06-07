@@ -4,14 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+aws = ["ta-config/aws"]
+
 [dependencies]
+ta-config.workspace = true
 ta-core.workspace = true
 ta-feed.workspace = true
 ta-detect.workspace = true
 ta-exec.workspace = true
 ta-sim.workspace = true
 of_core.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true

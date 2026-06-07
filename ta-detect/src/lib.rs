@@ -1,10 +1,13 @@
 use rustc_hash::FxHashMap;
 use ta_core::{ArbitrageOpportunity, Currency, ExchangeRateGraph, RouteLeg, Triangle};
+use std::time::Duration;
 
 pub struct DetectionConfig {
     pub min_profit_bps: f64,
     pub max_legs: usize,
     pub fee_taker_bps: f64,
+    /// If the graph has not been updated within this duration, detection is skipped.
+    pub max_data_age: Duration,
 }
 
 impl Default for DetectionConfig {
@@ -13,6 +16,7 @@ impl Default for DetectionConfig {
             min_profit_bps: 10.0,
             max_legs: 3,
             fee_taker_bps: 10.0,
+            max_data_age: Duration::from_millis(100),
         }
     }
 }
@@ -34,7 +38,16 @@ impl DetectionEngine {
         Self::new(DetectionConfig::default())
     }
 
+    /// Returns an empty Vec if the graph data is too stale.
     pub fn detect(&self, graph: &ExchangeRateGraph) -> Vec<ArbitrageOpportunity> {
+        if !graph.is_fresh(self.config.max_data_age) {
+            tracing::warn!(
+                "graph data stale (last update {:?} ago), skipping detection",
+                graph.last_updated_at().elapsed()
+            );
+            return Vec::new();
+        }
+
         let raw = graph.detect();
         let mut opportunities = Vec::new();
 
@@ -115,5 +128,17 @@ mod tests {
         let graph = ExchangeRateGraph::new();
         let ops = engine.detect(&graph);
         assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn test_detect_stale_graph() {
+        let mut graph = ExchangeRateGraph::new();
+        graph.set_rate(&"A".into(), &"B".into(), 100, 101);
+        let engine = DetectionEngine::new(DetectionConfig {
+            max_data_age: Duration::from_nanos(1),
+            ..Default::default()
+        });
+        let ops = engine.detect(&graph);
+        assert!(ops.is_empty(), "expected empty for stale graph");
     }
 }

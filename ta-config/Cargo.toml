@@ -1,0 +1,23 @@
+[package]
+name = "ta-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+secrecy = { version = "0.10", features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror = "2"
+tracing.workspace = true
+
+# local dev
+dotenvy = "0.15"
+
+# AWS cloud
+aws-config = { version = "1", optional = true }
+aws-sdk-secretsmanager = { version = "1", optional = true }
+
+[features]
+default = []
+aws = ["dep:aws-config", "dep:aws-sdk-secretsmanager"]

@@ -1,0 +1,25 @@
+[package]
+name = "ta-bench"
+version.workspace = true
+edition.workspace = true
+publish = false
+autobins = false
+autoexamples = false
+autotests = false
+
+[dependencies]
+ta-core.workspace = true
+ta-detect.workspace = true
+ta-exec.workspace = true
+ta-feed.workspace = true
+of_core.workspace = true
+of_execution_core.workspace = true
+of_execution.workspace = true
+rustc-hash.workspace = true
+divan = "0.1"
+rand = "0.8"
+
+[[bench]]
+name = "main"
+path = "src/main.rs"
+harness = false

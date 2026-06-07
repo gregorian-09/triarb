@@ -2,16 +2,29 @@ use of_adapters::{AdapterConfig, MarketDataAdapter, ProviderKind, RawEvent, Subs
 use of_core::{BookLevel, BookSnapshot, BookUpdate, Side, SymbolId, TradePrint};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use ta_core::ExchangeRateGraph;
 use tokio::sync::RwLock;
 
 const TOP_DEPTH: u16 = 10;
+
+/// Connection health snapshot for a feed.
+#[derive(Debug, Clone)]
+pub struct FeedHealth {
+    pub connected: bool,
+    pub last_message_at: Option<Instant>,
+    pub consecutive_errors: u32,
+    pub degraded: bool,
+}
 
 pub struct FeedEngine {
     adapter: Box<dyn MarketDataAdapter + Send>,
     books: Arc<RwLock<FxHashMap<SymbolId, BookSnapshot>>>,
     graph: Arc<RwLock<ExchangeRateGraph>>,
     _subscribed: Vec<SymbolId>,
+    connected: bool,
+    last_message_at: Option<Instant>,
+    consecutive_errors: u32,
 }
 
 impl FeedEngine {
@@ -27,6 +40,9 @@ impl FeedEngine {
             books: Arc::new(RwLock::new(FxHashMap::default())),
             graph: Arc::new(RwLock::new(ExchangeRateGraph::new())),
             _subscribed: Vec::new(),
+            connected: false,
+            last_message_at: None,
+            consecutive_errors: 0,
         }
     }
 
@@ -38,29 +54,67 @@ impl FeedEngine {
         self.graph.clone()
     }
 
+    /// Returns a snapshot of current feed health.
+    pub fn health(&self) -> FeedHealth {
+        FeedHealth {
+            connected: self.connected,
+            last_message_at: self.last_message_at,
+            consecutive_errors: self.consecutive_errors,
+            degraded: !self.connected || self.consecutive_errors >= 5,
+        }
+    }
+
     pub async fn connect(&mut self) {
-        self.adapter.connect().expect("connect Binance adapter");
+        match self.adapter.connect() {
+            Ok(_) => {
+                self.connected = true;
+                self.consecutive_errors = 0;
+                tracing::info!("feed connected");
+            }
+            Err(e) => {
+                self.connected = false;
+                self.consecutive_errors += 1;
+                tracing::error!("feed connect failed: {e}");
+            }
+        }
     }
 
     pub async fn subscribe(&mut self, symbol: SymbolId) {
-        self.adapter
-            .subscribe(SubscribeReq {
-                symbol: symbol.clone(),
-                depth_levels: TOP_DEPTH,
-            })
-            .expect("subscribe");
-        self._subscribed.push(symbol);
+        match self.adapter.subscribe(SubscribeReq {
+            symbol: symbol.clone(),
+            depth_levels: TOP_DEPTH,
+        }) {
+            Ok(_) => {
+                self._subscribed.push(symbol);
+            }
+            Err(e) => {
+                self.consecutive_errors += 1;
+                tracing::error!("feed subscribe failed: {e}");
+            }
+        }
     }
 
     pub async fn poll(&mut self) {
         let mut events = Vec::new();
         match self.adapter.poll(&mut events) {
-            Ok(_) => {}
+            Ok(_) => {
+                self.consecutive_errors = 0;
+            }
             Err(e) => {
-                tracing::warn!("poll error: {e}");
+                self.consecutive_errors += 1;
+                tracing::warn!("poll error ({}/5 consecutive): {e}", self.consecutive_errors);
+                if self.consecutive_errors >= 5 {
+                    tracing::error!("feed degraded: too many consecutive poll errors");
+                }
                 return;
             }
         }
+
+        if events.is_empty() {
+            return;
+        }
+
+        self.last_message_at = Some(Instant::now());
 
         let mut books = self.books.write().await;
         let mut graph = self.graph.write().await;
@@ -77,7 +131,15 @@ impl FeedEngine {
         }
     }
 
-    fn apply_book_update(
+    pub fn bench_apply_book_update(
+        books: &mut FxHashMap<SymbolId, BookSnapshot>,
+        graph: &mut ExchangeRateGraph,
+        update: BookUpdate,
+    ) {
+        FeedEngine::apply_book_update(books, update, graph);
+    }
+
+fn apply_book_update(
         books: &mut FxHashMap<SymbolId, BookSnapshot>,
         update: BookUpdate,
         graph: &mut ExchangeRateGraph,
@@ -226,5 +288,15 @@ mod tests {
         assert_eq!(snap.bids.len(), 1);
         assert_eq!(snap.asks.len(), 1);
         assert_eq!(snap.bids[0].price, 50000_00_000_000);
+    }
+
+    #[tokio::test]
+    async fn test_feed_health_initial() {
+        let feed = FeedEngine::new(None);
+        let health = feed.health();
+        assert!(!health.connected);
+        assert!(health.last_message_at.is_none());
+        assert_eq!(health.consecutive_errors, 0);
+        assert!(health.degraded);
     }
 }
