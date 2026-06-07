@@ -1,0 +1,26 @@
+[project]
+name = "ta-analysis"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "plotly>=5.18",
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyter",
+    "ipykernel",
+    "pytest>=7.0",
+    "black",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
