@@ -1,0 +1,16 @@
+[package]
+name = "ta-feed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+of_core.workspace = true
+of_adapters = { workspace = true, features = ["binance"] }
+ta-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dashmap.workspace = true
+rustc-hash.workspace = true

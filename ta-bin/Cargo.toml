@@ -1,0 +1,18 @@
+[package]
+name = "ta-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ta-core.workspace = true
+ta-feed.workspace = true
+ta-detect.workspace = true
+ta-exec.workspace = true
+ta-sim.workspace = true
+of_core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+clap.workspace = true

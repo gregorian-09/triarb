@@ -1,0 +1,11 @@
+[package]
+name = "ta-detect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+of_core.workspace = true
+ta-core.workspace = true
+tracing.workspace = true
+rustc-hash.workspace = true

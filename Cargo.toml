@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["ta-core", "ta-feed", "ta-detect", "ta-exec", "ta-sim", "ta-bin"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+of_core = "0.4"
+of_adapters = "0.4"
+of_execution_core = "0.1"
+of_execution = "0.1"
+tokio = { version = "1", features = ["sync", "time", "macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dashmap = "6"
+rustc-hash = "2"
+ta-core = { path = "ta-core" }
+ta-feed = { path = "ta-feed" }
+ta-detect = { path = "ta-detect" }
+ta-exec = { path = "ta-exec" }
+ta-sim = { path = "ta-sim" }
+ta-bin = { path = "ta-bin" }
