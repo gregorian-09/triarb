@@ -2,11 +2,29 @@ use of_adapters::{AdapterConfig, MarketDataAdapter, ProviderKind, RawEvent, Subs
 use of_core::{BookLevel, BookSnapshot, BookUpdate, Side, SymbolId, TradePrint};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use ta_core::ExchangeRateGraph;
 use tokio::sync::RwLock;
 
 const TOP_DEPTH: u16 = 10;
+
+/// Configuration for the feed engine.
+#[derive(Debug, Clone)]
+pub struct FeedConfig {
+    /// Optional WebSocket endpoint override.
+    pub endpoint: Option<String>,
+    /// Maximum time since the last message before the feed is considered stale.
+    pub message_timeout: Duration,
+}
+
+impl Default for FeedConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            message_timeout: Duration::from_secs(10),
+        }
+    }
+}
 
 /// Connection health snapshot for a feed.
 #[derive(Debug, Clone)]
@@ -17,6 +35,16 @@ pub struct FeedHealth {
     pub degraded: bool,
 }
 
+impl FeedHealth {
+    /// Returns true if no message has been received within `max_age`.
+    pub fn is_stale(&self, max_age: Duration) -> bool {
+        match self.last_message_at {
+            Some(t) => t.elapsed() > max_age,
+            None => true,
+        }
+    }
+}
+
 pub struct FeedEngine {
     adapter: Box<dyn MarketDataAdapter + Send>,
     books: Arc<RwLock<FxHashMap<SymbolId, BookSnapshot>>>,
@@ -25,13 +53,21 @@ pub struct FeedEngine {
     connected: bool,
     last_message_at: Option<Instant>,
     consecutive_errors: u32,
+    config: FeedConfig,
 }
 
 impl FeedEngine {
     pub fn new(endpoint: Option<String>) -> Self {
+        Self::with_config(FeedConfig {
+            endpoint,
+            ..Default::default()
+        })
+    }
+
+    pub fn with_config(config: FeedConfig) -> Self {
         let cfg = AdapterConfig {
             provider: ProviderKind::Binance,
-            endpoint,
+            endpoint: config.endpoint.clone(),
             ..Default::default()
         };
         let adapter = of_adapters::create_adapter(&cfg).expect("create Binance adapter");
@@ -43,6 +79,7 @@ impl FeedEngine {
             connected: false,
             last_message_at: None,
             consecutive_errors: 0,
+            config,
         }
     }
 
@@ -60,7 +97,16 @@ impl FeedEngine {
             connected: self.connected,
             last_message_at: self.last_message_at,
             consecutive_errors: self.consecutive_errors,
-            degraded: !self.connected || self.consecutive_errors >= 5,
+            degraded: !self.connected
+                || self.consecutive_errors >= 5
+                || self.is_stale(),
+        }
+    }
+
+    fn is_stale(&self) -> bool {
+        match self.last_message_at {
+            Some(t) => t.elapsed() > self.config.message_timeout,
+            None => true,
         }
     }
 

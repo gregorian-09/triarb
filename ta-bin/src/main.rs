@@ -2,7 +2,10 @@ mod cli;
 
 use clap::Parser;
 use ta_config::{Config, ConfigError};
+use ta_exec::ExecEngine;
+use ta_feed::{FeedConfig, FeedEngine};
 use tokio::signal;
+use std::time::Duration;
 
 fn main() -> anyhow::Result<()> {
     let args = cli::Cli::parse();
@@ -34,8 +37,44 @@ fn main() -> anyhow::Result<()> {
 
 async fn run_loop() {
     tracing::info!("main loop started");
+
+    // Initialize feed with health check config
+    let mut feed = FeedEngine::with_config(FeedConfig {
+        message_timeout: Duration::from_secs(10),
+        ..Default::default()
+    });
+
+    // Initialize execution engine
+    let mut exec = ExecEngine::new(Default::default());
+
+    // Connect to the exchange
+    feed.connect().await;
+
+    let mut health_interval = tokio::time::interval(Duration::from_secs(5));
+    let mut timeout_interval = tokio::time::interval(Duration::from_secs(2));
+
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        tokio::select! {
+            _ = health_interval.tick() => {
+                let health = feed.health();
+                if health.degraded {
+                    tracing::warn!(
+                        connected = health.connected,
+                        stale = health.last_message_at.map(|t| t.elapsed().as_secs()).unwrap_or(99),
+                        errors = health.consecutive_errors,
+                        "feed degraded"
+                    );
+                } else if health.connected {
+                    tracing::debug!("feed healthy");
+                }
+            }
+            _ = timeout_interval.tick() => {
+                let timeouts = exec.check_order_timeouts();
+                if !timeouts.is_empty() {
+                    tracing::warn!("{} order(s) timed out", timeouts.len());
+                }
+            }
+        }
     }
 }
 

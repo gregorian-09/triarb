@@ -2078,6 +2078,8 @@ dependencies = [
  "of_execution",
  "of_execution_core",
  "rustc-hash",
+ "serde",
+ "serde_json",
  "ta-core",
  "tracing",
 ]
