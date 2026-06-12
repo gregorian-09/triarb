@@ -240,7 +240,12 @@ fn apply_book_update(
         }
     }
 
-    fn apply_trade(_books: &mut FxHashMap<SymbolId, BookSnapshot>, _trade: TradePrint) {}
+    fn apply_trade(books: &mut FxHashMap<SymbolId, BookSnapshot>, trade: TradePrint) {
+        if let Some(book) = books.get_mut(&trade.symbol) {
+            book.ts_exchange_ns = trade.ts_exchange_ns;
+            book.ts_recv_ns = trade.ts_recv_ns;
+        }
+    }
 }
 
 fn parse_currency(symbol: &SymbolId) -> (String, String) {

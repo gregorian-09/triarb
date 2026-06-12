@@ -11,17 +11,29 @@ pub use order_timeout::*;
 pub use price_check::*;
 
 use of_core::{BookSnapshot, SymbolId};
-use of_execution_core::{AccountId, ExecutionSymbol, RouteId};
+use of_execution::{ExecutionEngine, ExecutionEventBuffer, RouteConfig, SimExecutionAdapter};
+use of_execution::InMemoryJournal;
+use of_execution_core::{
+    AccountId, ClientOrderId, ExecutionSymbol, FixedAscii, OrderPrice, OrderQty,
+    OrderRequest, OrderType, RiskLimits, RouteId, StrategyId, TimeInForce,
+};
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use ta_core::{ArbitrageOpportunity, DedupTable, FillState, OpportunityId};
 
+pub(crate) fn nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
 pub struct ExecConfig {
     pub route_id: RouteId,
     pub account_id: AccountId,
-    pub symbol: ExecutionSymbol,
+    pub symbols: Vec<ExecutionSymbol>,
     pub dedup_ttl: Duration,
     /// Path to the order journal JSONL file. None = no persistence.
     pub journal_path: Option<PathBuf>,
@@ -34,7 +46,7 @@ impl Default for ExecConfig {
         Self {
             route_id: RouteId::new("BINANCE").unwrap(),
             account_id: AccountId::new("MAIN").unwrap(),
-            symbol: ExecutionSymbol::new("BINANCE", "BTCUSDT").unwrap(),
+            symbols: vec![ExecutionSymbol::new("BINANCE", "BTCUSDT").unwrap()],
             dedup_ttl: Duration::from_secs(60),
             journal_path: None,
             price_tolerance: PriceTolerance::default(),
@@ -44,17 +56,42 @@ impl Default for ExecConfig {
 }
 
 pub struct ExecEngine {
+    config: ExecConfig,
+    engine: ExecutionEngine<SimExecutionAdapter, of_execution::AllowAllRiskGate, InMemoryJournal>,
+    buf: ExecutionEventBuffer,
     dedup: DedupTable,
     pending_fills: HashMap<OpportunityId, FillState>,
     journal: Option<FileOrderLog>,
     price_checker: PriceChecker,
     gc_counter: u64,
     order_tracker: OrderTimeoutTracker,
+    next_order_seq: u64,
 }
 
 impl ExecEngine {
     pub fn new(config: ExecConfig) -> Self {
-        let journal = config.journal_path.map(|path| {
+        let routes: Vec<RouteConfig> = config
+            .symbols
+            .iter()
+            .map(|sym| RouteConfig {
+                route_id: config.route_id,
+                account_id: config.account_id,
+                symbol: *sym,
+                enabled: true,
+                risk_limits: RiskLimits {
+                    kill_switch: false,
+                    max_order_qty: 1_000_000,
+                    max_order_notional: 10_000_000_000_000_000,
+                    max_open_orders: 100,
+                    max_open_notional: 100_000_000_000_000_000,
+                    price_band_ticks: 0,
+                },
+            })
+            .collect();
+        let mut engine = of_execution::simulated_engine_with_routes(routes);
+        let _ = engine.start();
+
+        let journal = config.journal_path.clone().map(|path| {
             match FileOrderLog::open(&path) {
                 Ok(log) => {
                     log.report_unacknowledged();
@@ -67,15 +104,23 @@ impl ExecEngine {
             }
         });
 
+        let order_timeout = config.order_timeout;
+        let price_tolerance = config.price_tolerance;
+        let dedup_ttl = config.dedup_ttl;
+
         Self {
-            dedup: DedupTable::new(config.dedup_ttl),
+            config,
+            engine,
+            buf: ExecutionEventBuffer::with_capacity(64),
+            dedup: DedupTable::new(dedup_ttl),
             pending_fills: HashMap::new(),
             journal,
-            price_checker: PriceChecker::new(config.price_tolerance),
+            price_checker: PriceChecker::new(price_tolerance),
             gc_counter: 0,
             order_tracker: OrderTimeoutTracker::new(OrderTimeoutConfig {
-                submission_timeout: config.order_timeout,
+                submission_timeout: order_timeout,
             }),
+            next_order_seq: 1,
         }
     }
 
@@ -188,25 +233,71 @@ impl ExecEngine {
     fn submit_leg(&mut self, opp: &ArbitrageOpportunity, leg_idx: usize) -> Result<(), ExecError> {
         let opp_id = OpportunityId::from_opportunity(opp);
         self.order_tracker.record_submission(opp_id, leg_idx);
-        Ok(())
+
+        let leg = &opp.routes[leg_idx];
+        let req = self.build_order_req(leg)?;
+        self.buf.clear();
+
+        match self.engine.submit(req, &mut self.buf) {
+            Ok(()) => {
+                // Process fill events — engine.submit produces Ack + Trade
+                for event in self.buf.as_slice() {
+                    tracing::debug!(
+                        opp_id = ?opp_id,
+                        leg = leg_idx,
+                        exec_type = ?event.exec_type,
+                        status = ?event.order_status,
+                        last_qty = event.last_qty.0,
+                        last_price = event.last_price.0,
+                        "leg submission event"
+                    );
+                }
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!(?opp_id, leg = leg_idx, error = %e, "leg submission rejected");
+                Err(ExecError::SubmissionFailed(e.to_string()))
+            }
+        }
     }
 
-    fn hedge_leg(&self, opp: &ArbitrageOpportunity, leg_idx: usize) {
-        match hedge_spec(opp, leg_idx) {
-            Some(spec) => {
-                tracing::warn!(
-                    leg = leg_idx,
-                    hedge_symbol = %spec.symbol.symbol,
-                    hedge_side = ?spec.side,
-                    hedge_qty = spec.size,
-                    "hedging filled leg"
-                );
-                if let Err(e) = submit_hedge(&spec) {
-                    tracing::error!(leg = leg_idx, error = %e, "hedge submission failed");
-                }
-            }
+    fn hedge_leg(&mut self, opp: &ArbitrageOpportunity, leg_idx: usize) {
+        let spec = match hedge_spec(opp, leg_idx) {
+            Some(s) => s,
             None => {
                 tracing::error!(leg = leg_idx, "cannot build hedge spec: leg out of range");
+                return;
+            }
+        };
+
+        tracing::info!(
+            leg = leg_idx,
+            hedge_symbol = %spec.symbol.symbol,
+            hedge_side = ?spec.side,
+            hedge_qty = spec.size,
+            "submitting hedge order"
+        );
+
+        let req = self.build_hedge_req(&spec);
+        self.buf.clear();
+
+        match self.engine.submit(req, &mut self.buf) {
+            Ok(()) => {
+                for event in self.buf.as_slice() {
+                    tracing::debug!(
+                        hedge_symbol = %spec.symbol.symbol,
+                        exec_type = ?event.exec_type,
+                        status = ?event.order_status,
+                        "hedge order event"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    hedge_symbol = %spec.symbol.symbol,
+                    error = %e,
+                    "hedge submission failed"
+                );
             }
         }
     }
@@ -228,6 +319,62 @@ impl ExecEngine {
         self.gc_counter += 1;
         if self.gc_counter % 100 == 0 {
             self.dedup.gc();
+        }
+    }
+
+    fn next_client_order_id(&mut self) -> ClientOrderId {
+        let seq = self.next_order_seq;
+        self.next_order_seq += 1;
+        ClientOrderId::new(&format!("TA{:016X}", seq)).unwrap_or_default()
+    }
+
+    fn build_order_req(&mut self, leg: &ta_core::RouteLeg) -> Result<OrderRequest, ExecError> {
+        let exec_side = match leg.side {
+            ta_core::OrderSide::Buy => of_execution_core::OrderSide::Buy,
+            ta_core::OrderSide::Sell => of_execution_core::OrderSide::Sell,
+        };
+        let venue = FixedAscii::new(&leg.symbol.venue)
+            .map_err(|e| ExecError::SubmissionFailed(format!("venue: {e}")))?;
+        let instrument = FixedAscii::new(&leg.symbol.symbol)
+            .map_err(|e| ExecError::SubmissionFailed(format!("symbol: {e}")))?;
+        Ok(OrderRequest {
+            client_order_id: self.next_client_order_id(),
+            account_id: self.config.account_id,
+            route_id: self.config.route_id,
+            strategy_id: StrategyId::default(),
+            symbol: ExecutionSymbol { venue, instrument },
+            side: exec_side,
+            order_type: OrderType::Market,
+            time_in_force: TimeInForce::Ioc,
+            quantity: OrderQty(leg.size),
+            limit_price: OrderPrice(leg.price),
+            stop_price: OrderPrice(0),
+            ts_exchange_ns: 0,
+            ts_recv_ns: nanos(),
+        })
+    }
+
+    fn build_hedge_req(&mut self, spec: &HedgeSpec) -> OrderRequest {
+        let exec_side = match spec.side {
+            ta_core::OrderSide::Buy => of_execution_core::OrderSide::Buy,
+            ta_core::OrderSide::Sell => of_execution_core::OrderSide::Sell,
+        };
+        let venue = FixedAscii::new(&spec.symbol.venue).unwrap_or_default();
+        let instrument = FixedAscii::new(&spec.symbol.symbol).unwrap_or_default();
+        OrderRequest {
+            client_order_id: self.next_client_order_id(),
+            account_id: self.config.account_id,
+            route_id: self.config.route_id,
+            strategy_id: StrategyId::default(),
+            symbol: ExecutionSymbol { venue, instrument },
+            side: exec_side,
+            order_type: OrderType::Market,
+            time_in_force: TimeInForce::Ioc,
+            quantity: OrderQty(spec.size),
+            limit_price: OrderPrice(0),
+            stop_price: OrderPrice(0),
+            ts_exchange_ns: 0,
+            ts_recv_ns: nanos(),
         }
     }
 }
@@ -295,9 +442,24 @@ mod tests {
         books
     }
 
+    fn dummy_symbols() -> Vec<ExecutionSymbol> {
+        vec![
+            ExecutionSymbol::new("BINANCE", "BTCUSDT").unwrap(),
+            ExecutionSymbol::new("BINANCE", "ETHBTC").unwrap(),
+            ExecutionSymbol::new("BINANCE", "ETHUSDT").unwrap(),
+        ]
+    }
+
+    fn test_config() -> ExecConfig {
+        ExecConfig {
+            symbols: dummy_symbols(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn test_dedup_rejects_duplicate() {
-        let mut engine = ExecEngine::new(ExecConfig::default());
+        let mut engine = ExecEngine::new(test_config());
         let opp = dummy_opportunity();
         let books = dummy_books();
         let r1 = engine.execute_opportunity(&opp, &books).unwrap();
@@ -308,7 +470,7 @@ mod tests {
 
     #[test]
     fn test_price_check_rejects_stale() {
-        let mut engine = ExecEngine::new(ExecConfig::default());
+        let mut engine = ExecEngine::new(test_config());
         let mut opp = dummy_opportunity();
         // Set a high tight price that won't match the book
         opp.routes[0].price = 99999_00_000_000;
@@ -319,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_exec_engine_creation() {
-        let mut engine = ExecEngine::new(ExecConfig::default());
+        let mut engine = ExecEngine::new(test_config());
         let opp = dummy_opportunity();
         let books = dummy_books();
         let result = engine.execute_opportunity(&opp, &books).unwrap();

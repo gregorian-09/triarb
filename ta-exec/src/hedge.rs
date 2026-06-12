@@ -25,36 +25,6 @@ pub fn hedge_spec(opp: &ArbitrageOpportunity, leg_idx: usize) -> Option<HedgeSpe
     })
 }
 
-/// Submit a hedge order. Returns Ok(()) if the hedge was submitted.
-///
-/// In the current implementation this is still a stub — the actual
-/// exchange submission layer is not yet wired. Records the hedge in
-/// the journal when one is available.
-pub fn submit_hedge(spec: &HedgeSpec) -> Result<(), HedgeError> {
-    tracing::info!(
-        "hedge: {} {} {} qty={}",
-        match spec.side {
-            OrderSide::Buy => "buy",
-            OrderSide::Sell => "sell",
-        },
-        spec.symbol.symbol,
-        spec.symbol.venue,
-        spec.size,
-    );
-    Ok(())
-}
-
-#[derive(Debug)]
-pub struct HedgeError {
-    pub reason: String,
-}
-
-impl std::fmt::Display for HedgeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "hedge failed: {}", self.reason)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,16 +79,5 @@ mod tests {
     fn test_hedge_spec_out_of_range() {
         let opp = dummy_opp();
         assert!(hedge_spec(&opp, 5).is_none());
-    }
-
-    #[test]
-    fn test_submit_hedge_ok() {
-        let spec = HedgeSpec {
-            symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
-            side: OrderSide::Sell,
-            size: 100,
-            leg_idx: 0,
-        };
-        assert!(submit_hedge(&spec).is_ok());
     }
 }
