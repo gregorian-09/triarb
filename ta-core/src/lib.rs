@@ -34,6 +34,7 @@ pub struct RouteLeg {
     pub size: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderSide {
     Buy,
     Sell,

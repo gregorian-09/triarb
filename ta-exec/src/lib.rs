@@ -1,7 +1,11 @@
+pub mod clock_skew;
+mod hedge;
 mod journal;
 mod order_timeout;
 mod price_check;
 
+pub use clock_skew::*;
+pub use hedge::*;
 pub use journal::*;
 pub use order_timeout::*;
 pub use price_check::*;
@@ -187,8 +191,24 @@ impl ExecEngine {
         Ok(())
     }
 
-    fn hedge_leg(&self, _opp: &ArbitrageOpportunity, _leg_idx: usize) {
-        tracing::warn!(leg = _leg_idx, "hedging filled leg (not yet implemented)");
+    fn hedge_leg(&self, opp: &ArbitrageOpportunity, leg_idx: usize) {
+        match hedge_spec(opp, leg_idx) {
+            Some(spec) => {
+                tracing::warn!(
+                    leg = leg_idx,
+                    hedge_symbol = %spec.symbol.symbol,
+                    hedge_side = ?spec.side,
+                    hedge_qty = spec.size,
+                    "hedging filled leg"
+                );
+                if let Err(e) = submit_hedge(&spec) {
+                    tracing::error!(leg = leg_idx, error = %e, "hedge submission failed");
+                }
+            }
+            None => {
+                tracing::error!(leg = leg_idx, "cannot build hedge spec: leg out of range");
+            }
+        }
     }
 
     /// Check for timed-out orders and return any that need attention.

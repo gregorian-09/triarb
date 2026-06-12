@@ -1,11 +1,11 @@
 mod cli;
 
 use clap::Parser;
+use std::time::Duration;
 use ta_config::{Config, ConfigError};
-use ta_exec::ExecEngine;
+use ta_exec::{check_ntp, ExecEngine, MAX_CLOCK_SKEW_MS, DEFAULT_NTP_SERVER};
 use ta_feed::{FeedConfig, FeedEngine};
 use tokio::signal;
-use std::time::Duration;
 
 fn main() -> anyhow::Result<()> {
     let args = cli::Cli::parse();
@@ -37,6 +37,32 @@ fn main() -> anyhow::Result<()> {
 
 async fn run_loop() {
     tracing::info!("main loop started");
+
+    // Check NTP clock sync before touching any exchange API
+    match tokio::task::spawn_blocking(|| check_ntp(DEFAULT_NTP_SERVER)).await {
+        Ok(Some(skew)) => {
+            if skew.is_safe() {
+                tracing::info!(
+                    offset_ms = skew.offset_ms,
+                    delay_ms = skew.delay_ms,
+                    "NTP clock check passed"
+                );
+            } else {
+                tracing::error!(
+                    offset_ms = skew.offset_ms,
+                    max_skew_ms = MAX_CLOCK_SKEW_MS,
+                    "clock skew exceeds safe threshold — refusing to start"
+                );
+                return;
+            }
+        }
+        Ok(None) => {
+            tracing::warn!("NTP check failed (network or DNS) — proceeding without verification");
+        }
+        Err(e) => {
+            tracing::warn!("NTP check task failed: {e} — proceeding");
+        }
+    }
 
     // Initialize feed with health check config
     let mut feed = FeedEngine::with_config(FeedConfig {
