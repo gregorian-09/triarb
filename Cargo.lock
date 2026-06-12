@@ -2026,6 +2026,7 @@ dependencies = [
  "anyhow",
  "clap",
  "of_core",
+ "rustc-hash",
  "ta-config",
  "ta-core",
  "ta-detect",

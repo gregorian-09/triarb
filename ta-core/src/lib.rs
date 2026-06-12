@@ -13,6 +13,7 @@ pub struct RateTriple {
     pub best_ask: i64,
 }
 
+#[derive(Debug, Clone)]
 pub struct Triangle {
     pub leg_a: (Currency, Currency),
     pub leg_b: (Currency, Currency),
@@ -27,6 +28,7 @@ pub struct ArbitrageOpportunity {
     pub ts_ns: u64,
 }
 
+#[derive(Clone)]
 pub struct RouteLeg {
     pub symbol: SymbolId,
     pub side: OrderSide,
@@ -176,6 +178,9 @@ pub struct ExchangeRateGraph {
     log_rates: Vec<f64>,
     adjacency: Vec<Vec<(usize, f64)>>,
     last_updated_at: Instant,
+    /// Maps (from_idx, to_idx) → the exchange symbol that produced this rate.
+    /// Stored as {base}{quote} in the symbol name, consistent with parse_currency.
+    symbol_map: HashMap<(usize, usize), SymbolId>,
 }
 
 impl ExchangeRateGraph {
@@ -187,6 +192,7 @@ impl ExchangeRateGraph {
             log_rates: Vec::new(),
             adjacency: Vec::new(),
             last_updated_at: Instant::now(),
+            symbol_map: HashMap::new(),
         }
     }
 
@@ -198,6 +204,7 @@ impl ExchangeRateGraph {
             log_rates: Vec::with_capacity(n * n),
             adjacency: Vec::with_capacity(n),
             last_updated_at: Instant::now(),
+            symbol_map: HashMap::with_capacity(n),
         }
     }
 
@@ -223,8 +230,10 @@ impl ExchangeRateGraph {
         let i = self.add_currency(from.clone());
         let j = self.add_currency(to.clone());
         let n = self.n;
-        if ask > 0 {
-            let w = (ask as f64).ln();
+        // base→quote: selling base for quote → you receive `bid` quote per base.
+        // Weight = -ln(bid) (negative of log of quantity received).
+        if bid > 0 {
+            let w = -(bid as f64).ln();
             self.log_rates[i * n + j] = w;
             let adj = &mut self.adjacency[i];
             if let Some(pos) = adj.iter().position(|&(t, _)| t == j) {
@@ -233,8 +242,10 @@ impl ExchangeRateGraph {
                 adj.push((j, w));
             }
         }
-        if bid > 0 {
-            let w = -(bid as f64).recip().ln();
+        // quote→base: buying base with quote → you pay `ask` quote per base.
+        // Weight = ln(ask) (log of quantity paid).
+        if ask > 0 {
+            let w = (ask as f64).ln();
             self.log_rates[j * n + i] = w;
             let adj = &mut self.adjacency[j];
             if let Some(pos) = adj.iter().position(|&(t, _)| t == i) {
@@ -258,6 +269,46 @@ impl ExchangeRateGraph {
     /// Returns true if the graph has received any update within the last `max_age`.
     pub fn is_fresh(&self, max_age: Duration) -> bool {
         self.last_updated_at.elapsed() <= max_age
+    }
+
+    /// Record which exchange symbol produced the rate for an ordered currency pair.
+    /// `from` and `to` must match the order used in `set_rate`.
+    pub fn set_symbol_for(&mut self, from: &Currency, to: &Currency, symbol: SymbolId) {
+        let i = self.index.get(from);
+        let j = self.index.get(to);
+        if let (Some(&i), Some(&j)) = (i, j) {
+            self.symbol_map.entry((i, j)).or_insert(symbol);
+        }
+    }
+
+    /// Look up the exchange symbol for a directed currency pair.
+    /// Returns `None` if no symbol was registered for this direction.
+    pub fn get_symbol_for(&self, from: &Currency, to: &Currency) -> Option<&SymbolId> {
+        let i = self.index.get(from)?;
+        let j = self.index.get(to)?;
+        self.symbol_map.get(&(*i, *j))
+    }
+
+    /// Given a directed leg `(from, to)`, return the exchange symbol and
+    /// the order side needed to execute that leg.
+    ///
+    /// The graph stores symbols in `{base}{quote}` order (from `set_rate`).
+    /// If the leg follows the stored direction (base→quote) the side is Sell.
+    /// If the leg is reversed (quote→base) the side is Buy.
+    pub fn symbol_and_side_for(
+        &self,
+        from: &Currency,
+        to: &Currency,
+    ) -> Option<(&SymbolId, OrderSide)> {
+        // Direct match: (from, to) was the pair order → selling base for quote
+        if let Some(sym) = self.get_symbol_for(from, to) {
+            return Some((sym, OrderSide::Sell));
+        }
+        // Reverse match: (to, from) was the pair order → buying base with quote
+        if let Some(sym) = self.get_symbol_for(to, from) {
+            return Some((sym, OrderSide::Buy));
+        }
+        None
     }
 
     pub fn detect(&self) -> Vec<(Vec<usize>, f64)> {
@@ -298,16 +349,41 @@ impl ExchangeRateGraph {
             }
             for &(v, w) in &self.adjacency[u] {
                 if du + w < dist[v] - 1e-12 {
-                    let mut cycle = Vec::with_capacity(n);
-                    let mut seen = vec![false; n];
+                    // Walk back from u along predecessors to build the reverse path.
+                    // Stop when we either hit a self-reference (pred[i]==i at source)
+                    // or the next node is already in the path (cycle within).
+                    let mut path = Vec::new();
                     let mut cur = u;
-                    while !seen[cur] {
-                        seen[cur] = true;
-                        cycle.push(cur);
+                    loop {
+                        path.push(cur);
+                        if pred[cur] == cur {
+                            break;
+                        }
+                        if path.contains(&pred[cur]) {
+                            path.push(pred[cur]);
+                            break;
+                        }
                         cur = pred[cur];
                     }
-                    cycle.push(cur);
-                    cycle.reverse();
+
+                    // The relaxing edge u→v closes the cycle.
+                    // path stores nodes from u back to source (reversed cycle order).
+                    // Reconstruct forward: v → reverse(path[..v_pos]) → v
+                    let cycle = if let Some(v_pos) = path.iter().rposition(|&x| x == v) {
+                        let mut c: Vec<usize> =
+                            path[..v_pos].iter().rev().copied().collect();
+                        c.insert(0, v);
+                        c.push(v);
+                        c
+                    } else {
+                        let last = path[path.len() - 1];
+                        let mut c: Vec<usize> =
+                            path[..path.len() - 1].iter().rev().copied().collect();
+                        c.insert(0, last);
+                        c.push(v);
+                        c
+                    };
+
                     let profit = -(du + w - dist[v]);
                     opportunities.push((cycle, profit));
                 }
@@ -395,5 +471,50 @@ mod tests {
         assert!(!g.is_fresh(Duration::from_nanos(1))); // never updated
         g.set_rate(&"A".into(), &"B".into(), 100, 101);
         assert!(g.is_fresh(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn test_detect_finds_arbitrage() {
+        let mut g = ExchangeRateGraph::new();
+        // BTCUSDT: bid=100, ask=101
+        //   BTC→USDT = -ln(100) = -4.605 (sell BTC)
+        //   USDT→BTC =  ln(101) =  4.615 (buy BTC)
+        g.set_rate(&"BTC".into(), &"USDT".into(), 100, 101);
+        // ETHBTC: bid=1, ask=2
+        //   ETH→BTC = -ln(1) = 0 (sell ETH)
+        //   BTC→ETH =  ln(2) = 0.693 (buy ETH)
+        g.set_rate(&"ETH".into(), &"BTC".into(), 1, 2);
+        // ETHUSDT: bid=1, ask=2
+        //   ETH→USDT = -ln(1) = 0 (sell ETH)
+        //   USDT→ETH =  ln(2) = 0.693 (buy ETH)
+        g.set_rate(&"ETH".into(), &"USDT".into(), 1, 2);
+
+        let ops = g.detect();
+        assert!(!ops.is_empty(), "expected at least one arbitrage opportunity");
+
+        for (cycle, profit) in &ops {
+            assert!(cycle.len() >= 4, "cycle must have at least 4 nodes (start + 2 intermediate + end)");
+            assert!(*profit > 0.0, "profit must be positive");
+            // Verify the cycle starts and ends with the same currency
+            assert_eq!(cycle.first(), cycle.last(), "cycle must be closed");
+        }
+    }
+
+    #[test]
+    fn test_no_false_positive_no_arb() {
+        // All rates consistent — no arbitrage should be detected
+        let mut g = ExchangeRateGraph::new();
+        // BTCUSDT: bid=100, ask=101
+        g.set_rate(&"BTC".into(), &"USDT".into(), 100, 101);
+        // Cross rates consistent: 1 ETH = 0.5 BTC, 1 ETH = 50 USDT
+        // ETHBTC: bid=50, ask=51  → ETH→BTC = -ln(50), BTC→ETH = ln(51)
+        g.set_rate(&"ETH".into(), &"BTC".into(), 50, 51);
+        // ETHUSDT: bid=5000, ask=5100
+        g.set_rate(&"ETH".into(), &"USDT".into(), 5000, 5100);
+
+        let ops = g.detect();
+        // With consistent cross-rates (50 BTC/ETH × 100 USDT/BTC = 5000 USDT/ETH matches direct)
+        // there should be no arbitrage
+        assert!(ops.is_empty(), "consistent rates should not produce arbitrage");
     }
 }

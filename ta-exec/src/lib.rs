@@ -417,7 +417,8 @@ mod tests {
             },
             routes: vec![
                 RouteLeg { symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() }, side: OrderSide::Buy, price: 50000_00_000_000, size: 100 },
-                RouteLeg { symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() }, side: OrderSide::Sell, price: 5000_00_000_000, size: 100 },
+                // BTC→ETH: buy ETH with BTC → Buy on ETHBTC
+                RouteLeg { symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() }, side: OrderSide::Buy, price: 5000_00_000_000, size: 100 },
                 RouteLeg { symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() }, side: OrderSide::Sell, price: 3000_00_000_000, size: 100 },
             ],
             expected_profit_bps: 5.0,

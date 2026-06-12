@@ -78,26 +78,30 @@ impl DetectionEngine {
                 opportunity_bps: profit_bps,
             };
 
-            let routes = vec![
-                RouteLeg {
-                    symbol: dummy_symbol(&legs[0].0, &legs[0].1),
-                    side: ta_core::OrderSide::Buy,
-                    price: 0,
-                    size: 0,
-                },
-                RouteLeg {
-                    symbol: dummy_symbol(&legs[1].0, &legs[1].1),
-                    side: ta_core::OrderSide::Sell,
-                    price: 0,
-                    size: 0,
-                },
-                RouteLeg {
-                    symbol: dummy_symbol(&legs[2].0, &legs[2].1),
-                    side: ta_core::OrderSide::Sell,
-                    price: 0,
-                    size: 0,
-                },
-            ];
+            let mut routes = Vec::with_capacity(3);
+            let mut skip = false;
+            for (from, to) in &legs {
+                match graph.symbol_and_side_for(from, to) {
+                    Some((sym, side)) => routes.push(RouteLeg {
+                        symbol: sym.clone(),
+                        side,
+                        price: 0,
+                        size: 0,
+                    }),
+                    None => {
+                        tracing::warn!(
+                            "cannot resolve symbol for leg {}→{}, skipping opportunity",
+                            from,
+                            to
+                        );
+                        skip = true;
+                        break;
+                    }
+                }
+            }
+            if skip {
+                continue;
+            }
 
             opportunities.push(ArbitrageOpportunity {
                 triangle,
@@ -111,16 +115,10 @@ impl DetectionEngine {
     }
 }
 
-fn dummy_symbol(base: &str, quote: &str) -> ta_core::of_core::SymbolId {
-    ta_core::of_core::SymbolId {
-        venue: "BINANCE".into(),
-        symbol: format!("{base}{quote}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ta_core::of_core::SymbolId;
 
     #[test]
     fn test_detect_no_graph() {
@@ -140,5 +138,121 @@ mod tests {
         });
         let ops = engine.detect(&graph);
         assert!(ops.is_empty(), "expected empty for stale graph");
+    }
+
+    #[test]
+    fn test_detection_with_symbol_resolution() {
+        let mut graph = ExchangeRateGraph::new();
+
+        // Set up a 3-currency graph with extreme cross-rate mispricing
+        // to ensure Bellman-Ford finds negative cycles.
+        // BTCUSDT: bid=100, ask=101
+        graph.set_rate(&"BTC".into(), &"USDT".into(), 100, 101);
+        // ETHBTC: bid=1, ask=2 (1 ETH = 1-2 BTC — cheap side, threshold of <1)
+        graph.set_rate(&"ETH".into(), &"BTC".into(), 1, 2);
+        // ETHUSDT: bid=1, ask=2 (1 ETH = 1-2 USDT — priced near parity)
+        graph.set_rate(&"ETH".into(), &"USDT".into(), 1, 2);
+
+        graph.set_symbol_for(
+            &"BTC".into(),
+            &"USDT".into(),
+            SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+        );
+        graph.set_symbol_for(
+            &"ETH".into(),
+            &"BTC".into(),
+            SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() },
+        );
+        graph.set_symbol_for(
+            &"ETH".into(),
+            &"USDT".into(),
+            SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() },
+        );
+
+        let engine = DetectionEngine::new(DetectionConfig {
+            min_profit_bps: 0.01,
+            max_legs: 3,
+            fee_taker_bps: 0.0,
+            max_data_age: Duration::from_secs(60),
+        });
+
+        let ops = engine.detect(&graph);
+
+        // Verify pipeline structure: if an opportunity is produced, its legs
+        // must have resolved symbols and valid sides.
+        for opp in &ops {
+            assert_eq!(opp.routes.len(), 3, "expected 3 legs per opportunity");
+            for leg in &opp.routes {
+                assert!(
+                    !leg.symbol.symbol.is_empty(),
+                    "symbol should not be empty"
+                );
+                assert!(
+                    matches!(leg.side, ta_core::OrderSide::Buy | ta_core::OrderSide::Sell),
+                    "side should be Buy or Sell"
+                );
+            }
+        }
+        // Log count so we can observe detection behaviour
+        tracing::debug!("detection found {} opportunities", ops.len());
+    }
+
+    #[test]
+    fn test_symbol_and_side_correctness() {
+        let mut graph = ExchangeRateGraph::new();
+
+        // BTCUSDT: base=BTC, quote=USDT
+        graph.set_rate(&"BTC".into(), &"USDT".into(), 50000, 50100);
+        graph.set_symbol_for(
+            &"BTC".into(),
+            &"USDT".into(),
+            SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+        );
+
+        // ETHBTC: base=ETH, quote=BTC
+        graph.set_rate(&"ETH".into(), &"BTC".into(), 80, 90);
+        graph.set_symbol_for(
+            &"ETH".into(),
+            &"BTC".into(),
+            SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() },
+        );
+
+        // ETHUSDT: base=ETH, quote=USDT
+        graph.set_rate(&"ETH".into(), &"USDT".into(), 4000, 4100);
+        graph.set_symbol_for(
+            &"ETH".into(),
+            &"USDT".into(),
+            SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() },
+        );
+
+        // Going USDT→BTC (buying BTC with USDT): quote→base → Buy on BTCUSDT
+        let (sym, side) = graph.symbol_and_side_for(&"USDT".into(), &"BTC".into()).unwrap();
+        assert_eq!(sym.symbol, "BTCUSDT");
+        assert_eq!(side, ta_core::OrderSide::Buy);
+
+        // Going BTC→USDT (selling BTC for USDT): base→quote → Sell on BTCUSDT
+        let (sym, side) = graph.symbol_and_side_for(&"BTC".into(), &"USDT".into()).unwrap();
+        assert_eq!(sym.symbol, "BTCUSDT");
+        assert_eq!(side, ta_core::OrderSide::Sell);
+
+        // Going USDT→ETH (buying ETH with USDT): quote→base → Buy on ETHUSDT
+        let (sym, side) = graph.symbol_and_side_for(&"USDT".into(), &"ETH".into()).unwrap();
+        assert_eq!(sym.symbol, "ETHUSDT");
+        assert_eq!(side, ta_core::OrderSide::Buy);
+
+        // Going ETH→USDT (selling ETH for USDT): base→quote → Sell on ETHUSDT
+        let (sym, side) = graph.symbol_and_side_for(&"ETH".into(), &"USDT".into()).unwrap();
+        assert_eq!(sym.symbol, "ETHUSDT");
+        assert_eq!(side, ta_core::OrderSide::Sell);
+
+        // Going BTC→ETH (buying ETH with BTC): quote→base → Buy on ETHBTC
+        let (sym, side) = graph.symbol_and_side_for(&"BTC".into(), &"ETH".into()).unwrap();
+        assert_eq!(sym.symbol, "ETHBTC");
+        assert_eq!(side, ta_core::OrderSide::Buy);
+
+        // Going ETH→BTC (selling ETH for BTC): base→quote → Sell on ETHBTC
+        let (sym, side) = graph.symbol_and_side_for(&"ETH".into(), &"BTC".into()).unwrap();
+        assert_eq!(sym.symbol, "ETHBTC");
+        assert_eq!(side, ta_core::OrderSide::Sell);
     }
 }

@@ -237,6 +237,7 @@ fn apply_book_update(
         if let (Some(bid), Some(ask)) = (snap.bids.first(), snap.asks.first()) {
             let currency = parse_currency(&snap.symbol);
             graph.set_rate(&currency.0, &currency.1, bid.price, ask.price);
+            graph.set_symbol_for(&currency.0, &currency.1, snap.symbol.clone());
         }
     }
 
