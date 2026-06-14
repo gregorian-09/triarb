@@ -15,6 +15,10 @@ pub struct FeedConfig {
     pub endpoint: Option<String>,
     /// Maximum time since the last message before the feed is considered stale.
     pub message_timeout: Duration,
+    /// Divide raw integer prices by this factor to obtain natural-unit prices
+    /// before inserting into the exchange-rate graph.  Binance adapter prices
+    /// typically carry a 1 000 000× scale factor for USDT pairs.
+    pub price_scale: f64,
 }
 
 impl Default for FeedConfig {
@@ -22,6 +26,7 @@ impl Default for FeedConfig {
         Self {
             endpoint: None,
             message_timeout: Duration::from_secs(10),
+            price_scale: 1_000_000.0,
         }
     }
 }
@@ -245,7 +250,7 @@ impl FeedEngine {
             match event {
                 RawEvent::Book(_update) => {
                     self.counters.books += 1;
-                    Self::apply_book_update(&mut books, _update, &mut graph);
+                    Self::apply_book_update(&mut books, _update, &mut graph, self.config.price_scale);
                 }
                 RawEvent::Trade(trade) => {
                     self.counters.trades += 1;
@@ -259,14 +264,16 @@ impl FeedEngine {
         books: &mut FxHashMap<SymbolId, BookSnapshot>,
         graph: &mut ExchangeRateGraph,
         update: BookUpdate,
+        price_scale: f64,
     ) {
-        FeedEngine::apply_book_update(books, update, graph);
+        FeedEngine::apply_book_update(books, update, graph, price_scale);
     }
 
     fn apply_book_update(
         books: &mut FxHashMap<SymbolId, BookSnapshot>,
         update: BookUpdate,
         graph: &mut ExchangeRateGraph,
+        price_scale: f64,
     ) {
         let snap = books.entry(update.symbol.clone()).or_insert_with(|| {
             let currency = parse_currency(&update.symbol);
@@ -317,7 +324,12 @@ impl FeedEngine {
 
         if let (Some(bid), Some(ask)) = (snap.bids.first(), snap.asks.first()) {
             let currency = parse_currency(&snap.symbol);
-            graph.set_rate(&currency.0, &currency.1, bid.price, ask.price);
+            graph.set_rate(
+                &currency.0,
+                &currency.1,
+                bid.price as f64 / price_scale,
+                ask.price as f64 / price_scale,
+            );
             graph.set_symbol_for(&currency.0, &currency.1, snap.symbol.clone());
         }
     }
@@ -386,36 +398,36 @@ mod tests {
             symbol: btcusdt.clone(), side: Side::Bid, level: 0,
             price: 100, size: 1000, action: BookAction::Upsert,
             sequence: 1, ts_exchange_ns: 1, ts_recv_ns: 1,
-        });
+        }, 1.0);
         FeedEngine::bench_apply_book_update(books, graph, BookUpdate {
             symbol: btcusdt, side: Side::Ask, level: 0,
             price: 101, size: 1000, action: BookAction::Upsert,
             sequence: 2, ts_exchange_ns: 2, ts_recv_ns: 2,
-        });
+        }, 1.0);
 
         // ETHBTC: bid = 1, ask = 2
         FeedEngine::bench_apply_book_update(books, graph, BookUpdate {
             symbol: ethbtc.clone(), side: Side::Bid, level: 0,
             price: 1, size: 100_000, action: BookAction::Upsert,
             sequence: 3, ts_exchange_ns: 3, ts_recv_ns: 3,
-        });
+        }, 1.0);
         FeedEngine::bench_apply_book_update(books, graph, BookUpdate {
             symbol: ethbtc.clone(), side: Side::Ask, level: 0,
             price: 2, size: 100_000, action: BookAction::Upsert,
             sequence: 4, ts_exchange_ns: 4, ts_recv_ns: 4,
-        });
+        }, 1.0);
 
         // ETHUSDT: bid = 1, ask = 2
         FeedEngine::bench_apply_book_update(books, graph, BookUpdate {
             symbol: ethusdt.clone(), side: Side::Bid, level: 0,
             price: 1, size: 100_000, action: BookAction::Upsert,
             sequence: 5, ts_exchange_ns: 5, ts_recv_ns: 5,
-        });
+        }, 1.0);
         FeedEngine::bench_apply_book_update(books, graph, BookUpdate {
             symbol: ethusdt.clone(), side: Side::Ask, level: 0,
             price: 2, size: 100_000, action: BookAction::Upsert,
             sequence: 6, ts_exchange_ns: 6, ts_recv_ns: 6,
-        });
+        }, 1.0);
     }
 
     #[tokio::test]
@@ -498,36 +510,36 @@ mod tests {
             symbol: btcusdt.clone(), side: Side::Bid, level: 0,
             price: 100, size: 1000, action: BookAction::Upsert,
             sequence: 1, ts_exchange_ns: 1, ts_recv_ns: 1,
-        });
+        }, 1.0);
         FeedEngine::bench_apply_book_update(&mut books, &mut graph, BookUpdate {
             symbol: btcusdt, side: Side::Ask, level: 0,
             price: 101, size: 1000, action: BookAction::Upsert,
             sequence: 2, ts_exchange_ns: 2, ts_recv_ns: 2,
-        });
+        }, 1.0);
 
         // ETHBTC: bid = 50, ask = 51  → 1 ETH = 50-51 BTC
         FeedEngine::bench_apply_book_update(&mut books, &mut graph, BookUpdate {
             symbol: ethbtc.clone(), side: Side::Bid, level: 0,
             price: 50, size: 1000, action: BookAction::Upsert,
             sequence: 3, ts_exchange_ns: 3, ts_recv_ns: 3,
-        });
+        }, 1.0);
         FeedEngine::bench_apply_book_update(&mut books, &mut graph, BookUpdate {
             symbol: ethbtc, side: Side::Ask, level: 0,
             price: 51, size: 1000, action: BookAction::Upsert,
             sequence: 4, ts_exchange_ns: 4, ts_recv_ns: 4,
-        });
+        }, 1.0);
 
         // ETHUSDT: bid = 5000, ask = 5100  → 1 ETH = 5000-5100 USDT
         FeedEngine::bench_apply_book_update(&mut books, &mut graph, BookUpdate {
             symbol: ethusdt.clone(), side: Side::Bid, level: 0,
             price: 5000, size: 1000, action: BookAction::Upsert,
             sequence: 5, ts_exchange_ns: 5, ts_recv_ns: 5,
-        });
+        }, 1.0);
         FeedEngine::bench_apply_book_update(&mut books, &mut graph, BookUpdate {
             symbol: ethusdt, side: Side::Ask, level: 0,
             price: 5100, size: 1000, action: BookAction::Upsert,
             sequence: 6, ts_exchange_ns: 6, ts_recv_ns: 6,
-        });
+        }, 1.0);
 
         // Cross-rates are consistent: 50 BTC/ETH × 100 USDT/BTC = 5000 USDT/ETH
         let detect = ta_detect::DetectionEngine::new(ta_detect::DetectionConfig {
@@ -580,6 +592,7 @@ mod tests {
                 ts_recv_ns: 2,
             },
             &mut graph,
+            1_000_000.0,
         );
 
         FeedEngine::apply_book_update(
@@ -596,6 +609,7 @@ mod tests {
                 ts_recv_ns: 4,
             },
             &mut graph,
+            1_000_000.0,
         );
 
         let snap = books.get(&symbol).unwrap();

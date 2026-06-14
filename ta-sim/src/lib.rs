@@ -354,7 +354,9 @@ impl BacktestEngine {
             let ask = tick.ask;
 
             if let Some((base, quote)) = self.symbol_map.get(&symbol) {
-                self.graph.set_rate(base, quote, bid, ask);
+                let norm_bid = bid as f64 / self.config.price_divisor;
+                let norm_ask = ask as f64 / self.config.price_divisor;
+                self.graph.set_rate(base, quote, norm_bid, norm_ask);
                 self.graph
                     .set_symbol_for(base, quote, symbol.clone());
             }

@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn test_detect_stale_graph() {
         let mut graph = ExchangeRateGraph::new();
-        graph.set_rate(&"A".into(), &"B".into(), 100, 101);
+        graph.set_rate(&"A".into(), &"B".into(), 100.0, 101.0);
         let engine = DetectionEngine::new(DetectionConfig {
             max_data_age: Duration::from_nanos(1),
             ..Default::default()
@@ -147,11 +147,11 @@ mod tests {
         // Set up a 3-currency graph with extreme cross-rate mispricing
         // to ensure Bellman-Ford finds negative cycles.
         // BTCUSDT: bid=100, ask=101
-        graph.set_rate(&"BTC".into(), &"USDT".into(), 100, 101);
+        graph.set_rate(&"BTC".into(), &"USDT".into(), 100.0, 101.0);
         // ETHBTC: bid=1, ask=2 (1 ETH = 1-2 BTC — cheap side, threshold of <1)
-        graph.set_rate(&"ETH".into(), &"BTC".into(), 1, 2);
+        graph.set_rate(&"ETH".into(), &"BTC".into(), 1.0, 2.0);
         // ETHUSDT: bid=1, ask=2 (1 ETH = 1-2 USDT — priced near parity)
-        graph.set_rate(&"ETH".into(), &"USDT".into(), 1, 2);
+        graph.set_rate(&"ETH".into(), &"USDT".into(), 1.0, 2.0);
 
         graph.set_symbol_for(
             &"BTC".into(),
@@ -208,7 +208,7 @@ mod tests {
         let mut graph = ExchangeRateGraph::new();
 
         // BTCUSDT: base=BTC, quote=USDT
-        graph.set_rate(&"BTC".into(), &"USDT".into(), 50000, 50100);
+        graph.set_rate(&"BTC".into(), &"USDT".into(), 50000.0, 50100.0);
         graph.set_symbol_for(
             &"BTC".into(),
             &"USDT".into(),
@@ -219,7 +219,7 @@ mod tests {
         );
 
         // ETHBTC: base=ETH, quote=BTC
-        graph.set_rate(&"ETH".into(), &"BTC".into(), 80, 90);
+        graph.set_rate(&"ETH".into(), &"BTC".into(), 80.0, 90.0);
         graph.set_symbol_for(
             &"ETH".into(),
             &"BTC".into(),
@@ -230,7 +230,7 @@ mod tests {
         );
 
         // ETHUSDT: base=ETH, quote=USDT
-        graph.set_rate(&"ETH".into(), &"USDT".into(), 4000, 4100);
+        graph.set_rate(&"ETH".into(), &"USDT".into(), 4000.0, 4100.0);
         graph.set_symbol_for(
             &"ETH".into(),
             &"USDT".into(),

@@ -26,7 +26,7 @@ fn build_graph(n: usize) -> ExchangeRateGraph {
             if i != j {
                 let bid = rng.gen_range(100_000..200_000);
                 let ask = bid + rng.gen_range(1..100);
-                g.set_rate(&currencies[i], &currencies[j], bid, ask);
+                g.set_rate(&currencies[i], &currencies[j], bid as f64, ask as f64);
             }
         }
     }
@@ -45,7 +45,7 @@ fn build_sparse_graph(n: usize) -> ExchangeRateGraph {
             if i != j && rng.gen_bool(0.15) {
                 let bid = rng.gen_range(100_000..200_000);
                 let ask = bid + rng.gen_range(1..100);
-                g.set_rate(&currencies[i], &currencies[j], bid, ask);
+                g.set_rate(&currencies[i], &currencies[j], bid as f64, ask as f64);
             }
         }
     }
@@ -87,7 +87,7 @@ fn graph_update(bencher: Bencher) {
         graph
             .lock()
             .unwrap()
-            .set_rate(&"CURR0".into(), &"CURR1".into(), 100_000, 100_050);
+            .set_rate(&"CURR0".into(), &"CURR1".into(), 100_000.0, 100_050.0);
     });
 }
 
@@ -98,7 +98,7 @@ fn graph_update_100(bencher: Bencher) {
         graph
             .lock()
             .unwrap()
-            .set_rate(&"CURR0".into(), &"CURR1".into(), 100_000, 100_050);
+            .set_rate(&"CURR0".into(), &"CURR1".into(), 100_000.0, 100_050.0);
     });
 }
 
@@ -187,6 +187,7 @@ fn feed_book_update_new_symbol(bencher: Bencher) {
             &mut *books.lock().unwrap(),
             &mut *graph.lock().unwrap(),
             book(symbol.clone(), of_core::Side::Bid, 0, 50000_00_000_000, 100),
+            1_000_000.0,
         );
     });
 }
@@ -212,6 +213,7 @@ fn feed_book_update_existing_10_levels(bencher: Bencher) {
                 50000_00_000_000 + (level as i64) * 100,
                 100,
             ),
+            1_000_000.0,
         );
         ta_feed::FeedEngine::bench_apply_book_update(
             &mut *books.lock().unwrap(),
@@ -223,6 +225,7 @@ fn feed_book_update_existing_10_levels(bencher: Bencher) {
                 50001_00_000_000 + (level as i64) * 100,
                 100,
             ),
+            1_000_000.0,
         );
     }
 
@@ -231,6 +234,7 @@ fn feed_book_update_existing_10_levels(bencher: Bencher) {
             &mut *books.lock().unwrap(),
             &mut *graph.lock().unwrap(),
             book(symbol.clone(), of_core::Side::Bid, 0, 50002_00_000_000, 150),
+            1_000_000.0,
         );
     });
 }

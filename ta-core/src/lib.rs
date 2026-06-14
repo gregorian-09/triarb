@@ -226,14 +226,14 @@ impl ExchangeRateGraph {
         idx
     }
 
-    pub fn set_rate(&mut self, from: &Currency, to: &Currency, bid: i64, ask: i64) {
+    pub fn set_rate(&mut self, from: &Currency, to: &Currency, bid: f64, ask: f64) {
         let i = self.add_currency(from.clone());
         let j = self.add_currency(to.clone());
         let n = self.n;
         // base→quote: selling base for quote → you receive `bid` quote per base.
         // Weight = -ln(bid) (negative of log of quantity received).
-        if bid > 0 {
-            let w = -(bid as f64).ln();
+        if bid > 0.0 {
+            let w = -(bid).ln();
             self.log_rates[i * n + j] = w;
             let adj = &mut self.adjacency[i];
             if let Some(pos) = adj.iter().position(|&(t, _)| t == j) {
@@ -244,8 +244,8 @@ impl ExchangeRateGraph {
         }
         // quote→base: buying base with quote → you pay `ask` quote per base.
         // Weight = ln(ask) (log of quantity paid).
-        if ask > 0 {
-            let w = (ask as f64).ln();
+        if ask > 0.0 {
+            let w = (ask).ln();
             self.log_rates[j * n + i] = w;
             let adj = &mut self.adjacency[j];
             if let Some(pos) = adj.iter().position(|&(t, _)| t == i) {
@@ -474,7 +474,7 @@ mod tests {
     fn test_graph_freshness() {
         let mut g = ExchangeRateGraph::new();
         assert!(!g.is_fresh(Duration::from_nanos(1))); // never updated
-        g.set_rate(&"A".into(), &"B".into(), 100, 101);
+        g.set_rate(&"A".into(), &"B".into(), 100.0, 101.0);
         assert!(g.is_fresh(Duration::from_secs(60)));
     }
 
@@ -484,15 +484,15 @@ mod tests {
         // BTCUSDT: bid=100, ask=101
         //   BTC→USDT = -ln(100) = -4.605 (sell BTC)
         //   USDT→BTC =  ln(101) =  4.615 (buy BTC)
-        g.set_rate(&"BTC".into(), &"USDT".into(), 100, 101);
+        g.set_rate(&"BTC".into(), &"USDT".into(), 100.0, 101.0);
         // ETHBTC: bid=1, ask=2
         //   ETH→BTC = -ln(1) = 0 (sell ETH)
         //   BTC→ETH =  ln(2) = 0.693 (buy ETH)
-        g.set_rate(&"ETH".into(), &"BTC".into(), 1, 2);
+        g.set_rate(&"ETH".into(), &"BTC".into(), 1.0, 2.0);
         // ETHUSDT: bid=1, ask=2
         //   ETH→USDT = -ln(1) = 0 (sell ETH)
         //   USDT→ETH =  ln(2) = 0.693 (buy ETH)
-        g.set_rate(&"ETH".into(), &"USDT".into(), 1, 2);
+        g.set_rate(&"ETH".into(), &"USDT".into(), 1.0, 2.0);
 
         let ops = g.detect();
         assert!(
@@ -516,12 +516,12 @@ mod tests {
         // All rates consistent — no arbitrage should be detected
         let mut g = ExchangeRateGraph::new();
         // BTCUSDT: bid=100, ask=101
-        g.set_rate(&"BTC".into(), &"USDT".into(), 100, 101);
+        g.set_rate(&"BTC".into(), &"USDT".into(), 100.0, 101.0);
         // Cross rates consistent: 1 ETH = 0.5 BTC, 1 ETH = 50 USDT
         // ETHBTC: bid=50, ask=51  → ETH→BTC = -ln(50), BTC→ETH = ln(51)
-        g.set_rate(&"ETH".into(), &"BTC".into(), 50, 51);
+        g.set_rate(&"ETH".into(), &"BTC".into(), 50.0, 51.0);
         // ETHUSDT: bid=5000, ask=5100
-        g.set_rate(&"ETH".into(), &"USDT".into(), 5000, 5100);
+        g.set_rate(&"ETH".into(), &"USDT".into(), 5000.0, 5100.0);
 
         let ops = g.detect();
         // With consistent cross-rates (50 BTC/ETH × 100 USDT/BTC = 5000 USDT/ETH matches direct)
@@ -532,9 +532,9 @@ mod tests {
     fn test_detect_with_my_rates() {
         let mut g = ExchangeRateGraph::new();
         // Same rates as the backtest_synthetic_triangle test
-        g.set_rate(&"BTC".into(), &"USDT".into(), 100, 101);
-        g.set_rate(&"ETH".into(), &"BTC".into(), 50, 51);
-        g.set_rate(&"ETH".into(), &"USDT".into(), 100, 101);
+        g.set_rate(&"BTC".into(), &"USDT".into(), 100.0, 101.0);
+        g.set_rate(&"ETH".into(), &"BTC".into(), 50.0, 51.0);
+        g.set_rate(&"ETH".into(), &"USDT".into(), 100.0, 101.0);
 
         let ops = g.detect();
         assert!(!ops.is_empty(), "my rates should produce arbitrage");

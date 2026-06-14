@@ -105,6 +105,7 @@ async fn run_loop(app_cfg: AppConfig) {
     let mut feed = FeedEngine::with_config(FeedConfig {
         endpoint: app_cfg.endpoint.clone(),
         message_timeout: app_cfg.message_timeout(),
+        price_scale: 1_000_000.0,
     });
 
     // Subscribe to configured symbols
