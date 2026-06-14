@@ -2282,6 +2282,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ta-core",
+ "ta-detect",
  "tracing",
 ]
 

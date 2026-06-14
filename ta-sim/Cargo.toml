@@ -9,6 +9,8 @@ of_core.workspace = true
 of_execution_core.workspace = true
 of_execution.workspace = true
 ta-core.workspace = true
+ta-detect.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+

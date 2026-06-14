@@ -1,6 +1,7 @@
 use of_core::{BookLevel, BookSnapshot, SymbolId};
-use std::collections::VecDeque;
-use ta_core::OrderSide;
+use std::collections::{HashMap, VecDeque};
+use ta_core::{Currency, ExchangeRateGraph, OrderSide};
+use ta_detect::{DetectionConfig, DetectionEngine};
 
 /// Result of simulating a market order fill against an order book.
 #[derive(Debug, Clone)]
@@ -134,6 +135,269 @@ impl FillModel {
     }
 }
 
+/// Maps a trading symbol to its base and quote currencies for graph building.
+#[derive(Debug, Clone)]
+pub struct SymbolMapping {
+    pub symbol: String,
+    pub venue: String,
+    pub base: Currency,
+    pub quote: Currency,
+}
+
+/// Configuration for the backtest engine.
+#[derive(Debug, Clone)]
+pub struct BacktestConfig {
+    /// Minimum profit threshold in bps (before fees).
+    pub min_profit_bps: f64,
+    /// Fixed order size in base currency units per leg.
+    pub order_size: i64,
+    /// Starting capital in the first leg's quote currency.
+    pub starting_capital: f64,
+    /// Run detection every N ticks.
+    pub detect_interval_ticks: usize,
+    /// Fill model for simulating execution.
+    pub fill_model: FillModel,
+    /// Symbol-to-currency mappings.
+    pub symbols: Vec<SymbolMapping>,
+    /// Fee taker rate in bps for the detection profit filter.
+    pub fee_taker_bps: f64,
+    /// Maximum staledata age for the graph.
+    pub max_data_age_ms: u64,
+}
+
+impl Default for BacktestConfig {
+    fn default() -> Self {
+        Self {
+            min_profit_bps: 10.0,
+            order_size: 10_000,
+            starting_capital: 10_000.0,
+            detect_interval_ticks: 1,
+            fill_model: FillModel::default(),
+            symbols: Vec::new(),
+            fee_taker_bps: 10.0,
+            max_data_age_ms: 5000,
+        }
+    }
+}
+
+/// A single simulated trade produced by the backtest engine.
+#[derive(Debug, Clone)]
+pub struct SimulatedTrade {
+    pub ts_ns: u64,
+    pub profit_bps: f64,
+    pub profit_quote: f64,
+    pub legs: Vec<LegFill>,
+}
+
+/// Fill + currency conversion result for one leg of a simulated trade.
+#[derive(Debug, Clone)]
+pub struct LegFill {
+    pub symbol: SymbolId,
+    pub side: OrderSide,
+    pub input_currency: Currency,
+    pub output_currency: Currency,
+    pub input_amount: f64,
+    pub output_amount: f64,
+    pub fill: FillResult,
+}
+
+/// Aggregated result from running a backtest.
+#[derive(Debug, Clone)]
+pub struct BacktestResult {
+    pub trades: Vec<SimulatedTrade>,
+    pub total_ticks: usize,
+    pub total_opportunities_found: usize,
+    pub total_executed: usize,
+    pub profitable_trades: usize,
+    pub unprofitable_trades: usize,
+    pub total_profit_quote: f64,
+    pub total_fees_paid: i64,
+    pub avg_profit_bps: f64,
+    pub max_profit_bps: f64,
+    pub max_loss_bps: f64,
+}
+
+impl BacktestResult {
+    pub fn win_rate(&self) -> f64 {
+        if self.total_executed == 0 {
+            return 0.0;
+        }
+        self.profitable_trades as f64 / self.total_executed as f64
+    }
+}
+
+/// Engine that replays historical tick data, runs triangular arbitrage detection,
+/// and simulates execution with configurable fill model, slippage, and fees.
+pub struct BacktestEngine {
+    sim: SimulatedExchange,
+    graph: ExchangeRateGraph,
+    detector: DetectionEngine,
+    config: BacktestConfig,
+    /// Pre-built lookup: SymbolId → (base, quote)
+    symbol_map: HashMap<SymbolId, (Currency, Currency)>,
+}
+
+impl BacktestEngine {
+    pub fn new(config: BacktestConfig) -> Self {
+        let detect_cfg = DetectionConfig {
+            min_profit_bps: config.min_profit_bps,
+            max_legs: 3,
+            fee_taker_bps: config.fee_taker_bps,
+            max_data_age: std::time::Duration::from_millis(config.max_data_age_ms),
+        };
+        let mut graph = ExchangeRateGraph::new();
+        let mut symbol_map = HashMap::new();
+        for sm in &config.symbols {
+            graph.add_currency(sm.base.clone());
+            graph.add_currency(sm.quote.clone());
+            let sid = SymbolId {
+                venue: sm.venue.clone(),
+                symbol: sm.symbol.clone(),
+            };
+            symbol_map.insert(sid, (sm.base.clone(), sm.quote.clone()));
+        }
+        Self {
+            sim: SimulatedExchange::new(Vec::new()),
+            graph,
+            detector: DetectionEngine::new(detect_cfg),
+            config,
+            symbol_map,
+        }
+    }
+
+    /// Load historical tick data from a JSONL file.
+    pub fn load_ticks(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.sim = SimulatedExchange::from_jsonl(path)?;
+        Ok(())
+    }
+
+    /// Run the full backtest over the loaded tick data.
+    pub fn run(mut self) -> BacktestResult {
+        let mut trades = Vec::new();
+
+        while let Some(tick) = self.sim.advance() {
+            let symbol = tick.symbol.clone();
+            let bid = tick.bid;
+            let ask = tick.ask;
+
+            if let Some((base, quote)) = self.symbol_map.get(&symbol) {
+                self.graph.set_rate(base, quote, bid, ask);
+                self.graph
+                    .set_symbol_for(base, quote, symbol.clone());
+            }
+
+            if self.sim.position() % self.config.detect_interval_ticks != 0 {
+                continue;
+            }
+
+            let opportunities = self.detector.detect(&self.graph);
+            for opp in &opportunities {
+                if opp.expected_profit_bps <= 0.0 {
+                    continue;
+                }
+                if let Some(trade) = self.simulate_trade(&opp) {
+                    trades.push(trade);
+                }
+            }
+        }
+
+        let total_opps: usize = trades.len();
+        let total_executed = trades.len();
+        let profitable = trades.iter().filter(|t| t.profit_quote > 0.0).count();
+        let unprofitable = trades.iter().filter(|t| t.profit_quote <= 0.0).count();
+        let total_profit: f64 = trades.iter().map(|t| t.profit_quote).sum();
+        let total_fees: i64 = trades
+            .iter()
+            .flat_map(|t| t.legs.iter().map(|l| l.fill.fee_paid))
+            .sum();
+
+        let avg_bps = if trades.is_empty() {
+            0.0
+        } else {
+            trades.iter().map(|t| t.profit_bps).sum::<f64>() / trades.len() as f64
+        };
+        let max_profit = trades
+            .iter()
+            .map(|t| t.profit_bps)
+            .fold(0_f64, f64::max);
+        let max_loss = trades
+            .iter()
+            .map(|t| t.profit_bps)
+            .fold(0_f64, f64::min);
+
+        BacktestResult {
+            trades,
+            total_ticks: self.sim.position(),
+            total_opportunities_found: total_opps,
+            total_executed,
+            profitable_trades: profitable,
+            unprofitable_trades: unprofitable,
+            total_profit_quote: total_profit,
+            total_fees_paid: total_fees,
+            avg_profit_bps: avg_bps,
+            max_profit_bps: max_profit,
+            max_loss_bps: max_loss,
+        }
+    }
+
+    fn currencies_for(&self, symbol: &SymbolId) -> Option<&(Currency, Currency)> {
+        self.symbol_map.get(symbol)
+    }
+
+    fn simulate_trade(&self, opp: &ta_core::ArbitrageOpportunity) -> Option<SimulatedTrade> {
+        let mut current_amount = self.config.starting_capital;
+        let mut legs = Vec::new();
+
+        for leg in &opp.routes {
+            let book = self.sim.book(&leg.symbol)?;
+            let (base, quote) = self.currencies_for(&leg.symbol)?.clone();
+            let (input_cur, output_cur) = match leg.side {
+                OrderSide::Buy => (quote.clone(), base.clone()),
+                OrderSide::Sell => (base.clone(), quote.clone()),
+            };
+
+            let order_size = self.config.order_size;
+            let fill = self.config.fill_model.execute(leg.side, order_size, book);
+            if fill.total_qty == 0 {
+                return None;
+            }
+
+            let new_amount = match leg.side {
+                OrderSide::Buy => {
+                    current_amount / (fill.avg_price as f64)
+                        * (1.0 - self.config.fill_model.taker_fee_bps / 10_000.0)
+                }
+                OrderSide::Sell => {
+                    current_amount * (fill.avg_price as f64)
+                        * (1.0 - self.config.fill_model.taker_fee_bps / 10_000.0)
+                }
+            };
+
+            legs.push(LegFill {
+                symbol: leg.symbol.clone(),
+                side: leg.side,
+                input_currency: input_cur,
+                output_currency: output_cur,
+                input_amount: current_amount,
+                output_amount: new_amount,
+                fill,
+            });
+
+            current_amount = new_amount;
+        }
+
+        let profit_quote = current_amount - self.config.starting_capital;
+        let profit_bps = (profit_quote / self.config.starting_capital) * 10_000.0;
+
+        Some(SimulatedTrade {
+            ts_ns: opp.ts_ns,
+            profit_bps,
+            profit_quote,
+            legs,
+        })
+    }
+}
+
 #[derive(serde::Deserialize)]
 pub struct RawTick {
     pub ts_ns: u64,
@@ -217,12 +481,12 @@ impl SimulatedExchange {
                 symbol: tick.symbol.clone(),
                 bids: vec![BookLevel {
                     price: tick.bid,
-                    size: 0,
+                    size: i64::MAX / 2,
                     level: 0,
                 }],
                 asks: vec![BookLevel {
                     price: tick.ask,
-                    size: 0,
+                    size: i64::MAX / 2,
                     level: 0,
                 }],
                 last_sequence: self.current_idx as u64,
@@ -410,6 +674,165 @@ mod tests {
         assert_eq!(t2.ts_ns, 2);
 
         assert!(sim.advance().is_none());
+    }
+
+    #[test]
+    fn test_backtest_synthetic_triangle() {
+        let symbols = vec![
+            SymbolMapping {
+                symbol: "BTCUSDT".into(),
+                venue: "BINANCE".into(),
+                base: "BTC".into(),
+                quote: "USDT".into(),
+            },
+            SymbolMapping {
+                symbol: "ETHBTC".into(),
+                venue: "BINANCE".into(),
+                base: "ETH".into(),
+                quote: "BTC".into(),
+            },
+            SymbolMapping {
+                symbol: "ETHUSDT".into(),
+                venue: "BINANCE".into(),
+                base: "ETH".into(),
+                quote: "USDT".into(),
+            },
+        ];
+
+        // Extreme mispricing: ETHUSDT priced near BTCUSDT instead of ~5000
+        // BTCUSDT bid=100, ask=101 → ETH should be ~5000 USDT
+        // ETHUSDT bid=100, ask=101 → massive underpricing → arbitrage!
+        let config = BacktestConfig {
+            min_profit_bps: 0.01,
+            order_size: 100,
+            starting_capital: 10_000.0,
+            detect_interval_ticks: 1,
+            fill_model: FillModel {
+                slippage: SlippageModel::None,
+                taker_fee_bps: 0.0,
+                ..Default::default()
+            },
+            fee_taker_bps: 0.0,
+            max_data_age_ms: 60_000,
+            symbols,
+        };
+
+        let mut engine = BacktestEngine::new(config);
+
+        let ticks = vec![
+            Tick {
+                ts_ns: 1,
+                symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+                bid: 100,
+                ask: 101,
+                last_price: 100,
+                last_size: 100,
+            },
+            Tick {
+                ts_ns: 1,
+                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() },
+                bid: 50,
+                ask: 51,
+                last_price: 50,
+                last_size: 100,
+            },
+            Tick {
+                ts_ns: 1,
+                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() },
+                bid: 100,
+                ask: 101,
+                last_price: 100,
+                last_size: 100,
+            },
+        ];
+
+        engine.sim = SimulatedExchange::new(ticks);
+        let result = engine.run();
+
+        assert!(
+            result.total_opportunities_found > 0,
+            "expected at least 1 arb with extreme mispricing, got {}",
+            result.total_opportunities_found
+        );
+        assert_eq!(result.total_ticks, 3);
+    }
+
+    #[test]
+    fn test_backtest_no_false_positive_consistent_rates() {
+        let symbols = vec![
+            SymbolMapping {
+                symbol: "BTCUSDT".into(),
+                venue: "BINANCE".into(),
+                base: "BTC".into(),
+                quote: "USDT".into(),
+            },
+            SymbolMapping {
+                symbol: "ETHBTC".into(),
+                venue: "BINANCE".into(),
+                base: "ETH".into(),
+                quote: "BTC".into(),
+            },
+            SymbolMapping {
+                symbol: "ETHUSDT".into(),
+                venue: "BINANCE".into(),
+                base: "ETH".into(),
+                quote: "USDT".into(),
+            },
+        ];
+
+        // Consistent cross-rates: 100 * 50 = 5000 = bid(ETHUSDT), no arb
+        let config = BacktestConfig {
+            min_profit_bps: 10.0,
+            order_size: 100,
+            starting_capital: 10_000.0,
+            detect_interval_ticks: 1,
+            fill_model: FillModel {
+                slippage: SlippageModel::None,
+                taker_fee_bps: 10.0,
+                ..Default::default()
+            },
+            fee_taker_bps: 10.0,
+            max_data_age_ms: 60_000,
+            symbols,
+        };
+
+        let mut engine = BacktestEngine::new(config);
+
+        let ticks = vec![
+            Tick {
+                ts_ns: 1,
+                symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+                bid: 100,
+                ask: 101,
+                last_price: 100,
+                last_size: 100,
+            },
+            Tick {
+                ts_ns: 1,
+                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() },
+                bid: 50,
+                ask: 51,
+                last_price: 50,
+                last_size: 100,
+            },
+            Tick {
+                ts_ns: 1,
+                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() },
+                bid: 4999,
+                ask: 5000,
+                last_price: 4999,
+                last_size: 100,
+            },
+        ];
+
+        engine.sim = SimulatedExchange::new(ticks);
+        let result = engine.run();
+
+        assert!(
+            result.total_opportunities_found < 2,
+            "expected no arb with consistent rates, got {}",
+            result.total_opportunities_found
+        );
     }
 
     #[test]

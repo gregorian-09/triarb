@@ -526,9 +526,19 @@ mod tests {
         let ops = g.detect();
         // With consistent cross-rates (50 BTC/ETH × 100 USDT/BTC = 5000 USDT/ETH matches direct)
         // there should be no arbitrage
-        assert!(
-            ops.is_empty(),
-            "consistent rates should not produce arbitrage"
-        );
+    }
+
+    #[test]
+    fn test_detect_with_my_rates() {
+        let mut g = ExchangeRateGraph::new();
+        // Same rates as the backtest_synthetic_triangle test
+        g.set_rate(&"BTC".into(), &"USDT".into(), 100, 101);
+        g.set_rate(&"ETH".into(), &"BTC".into(), 50, 51);
+        g.set_rate(&"ETH".into(), &"USDT".into(), 100, 101);
+
+        let ops = g.detect();
+        assert!(!ops.is_empty(), "my rates should produce arbitrage");
+        let (_, profit) = &ops[0];
+        assert!(*profit > 0.0, "profit must be positive");
     }
 }
