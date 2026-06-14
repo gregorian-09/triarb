@@ -43,6 +43,8 @@ impl Default for DetectToml {
 pub struct ExecutionToml {
     pub order_size: i64,
     pub starting_capital: f64,
+    pub home_currency: Option<String>,
+    pub price_divisor: Option<f64>,
     pub taker_fee_bps: f64,
     pub slippage: String,
     pub detect_interval_ticks: usize,
@@ -53,6 +55,8 @@ impl Default for ExecutionToml {
         Self {
             order_size: 10_000,
             starting_capital: 10_000.0,
+            home_currency: None,
+            price_divisor: None,
             taker_fee_bps: 10.0,
             slippage: "walk".into(),
             detect_interval_ticks: 1,
@@ -105,14 +109,25 @@ pub fn run_backtest(args: &BacktestArgs) -> Result<()> {
         ),
     };
 
+    let home = cfg
+        .execution
+        .home_currency
+        .clone()
+        .unwrap_or_else(|| "USDT".to_string());
+
+    let bt_cfg = &cfg.execution;
+    let divisor = bt_cfg.price_divisor.unwrap_or(1_000_000.0);
+
     let backtest_cfg = BacktestConfig {
         min_profit_bps: cfg.detect.min_profit_bps,
-        order_size: cfg.execution.order_size,
-        starting_capital: cfg.execution.starting_capital,
-        detect_interval_ticks: cfg.execution.detect_interval_ticks,
+        order_size: bt_cfg.order_size,
+        starting_capital: bt_cfg.starting_capital,
+        home_currency: home,
+        price_divisor: divisor,
+        detect_interval_ticks: bt_cfg.detect_interval_ticks,
         fill_model: FillModel {
             latency_ns: 50_000,
-            taker_fee_bps: cfg.execution.taker_fee_bps,
+            taker_fee_bps: bt_cfg.taker_fee_bps,
             slippage,
         },
         symbols,

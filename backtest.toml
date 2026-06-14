@@ -1,0 +1,26 @@
+[symbols.BTCUSDT]
+venue = "BINANCE"
+base = "BTC"
+quote = "USDT"
+
+[symbols.ETHUSDT]
+venue = "BINANCE"
+base = "ETH"
+quote = "USDT"
+
+[symbols.ETHBTC]
+venue = "BINANCE"
+base = "ETH"
+quote = "BTC"
+
+[detect]
+min_profit_bps = 5.0
+fee_taker_bps = 10.0
+max_data_age_ms = 5000
+
+[execution]
+order_size = 10000
+starting_capital = 10000.0
+taker_fee_bps = 10.0
+slippage = "walk"
+detect_interval_ticks = 1

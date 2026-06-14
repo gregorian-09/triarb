@@ -2193,6 +2193,7 @@ dependencies = [
  "prometheus",
  "rustc-hash",
  "serde",
+ "serde_json",
  "ta-config",
  "ta-core",
  "ta-detect",

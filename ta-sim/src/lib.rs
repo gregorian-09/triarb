@@ -149,10 +149,16 @@ pub struct SymbolMapping {
 pub struct BacktestConfig {
     /// Minimum profit threshold in bps (before fees).
     pub min_profit_bps: f64,
-    /// Fixed order size in base currency units per leg.
+    /// Fixed order size in the *input* currency per leg
+    /// (e.g. for a Buy, this is in quote currency you spend).
     pub order_size: i64,
-    /// Starting capital in the first leg's quote currency.
+    /// Starting capital amount (in the same unit as prices).
     pub starting_capital: f64,
+    /// Currency the starting capital is denominated in (e.g. "USDT").
+    pub home_currency: Currency,
+    /// Divide stored prices by this factor to get the real price
+    /// in starting_capital units.  Binance USDT pairs use ~1e6.
+    pub price_divisor: f64,
     /// Run detection every N ticks.
     pub detect_interval_ticks: usize,
     /// Fill model for simulating execution.
@@ -171,6 +177,8 @@ impl Default for BacktestConfig {
             min_profit_bps: 10.0,
             order_size: 10_000,
             starting_capital: 10_000.0,
+            home_currency: "USDT".into(),
+            price_divisor: 1_000_000.0,
             detect_interval_ticks: 1,
             fill_model: FillModel::default(),
             symbols: Vec::new(),
@@ -409,11 +417,59 @@ impl BacktestEngine {
         self.symbol_map.get(symbol)
     }
 
+    /// Rotate the routes so the first leg's input currency matches home_currency.
+    fn normalize_routes(&self, opp: &ta_core::ArbitrageOpportunity) -> Option<Vec<ta_core::RouteLeg>> {
+        let home = &self.config.home_currency;
+        let n = opp.routes.len();
+        if n == 0 {
+            return None;
+        }
+
+        // Find a route whose input currency matches home
+        let start_idx = opp.routes.iter().position(|leg| {
+            self.currencies_for(&leg.symbol)
+                .map(|(base, quote)| match leg.side {
+                    OrderSide::Buy => quote == home,
+                    OrderSide::Sell => base == home,
+                })
+                .unwrap_or(false)
+        })?;
+
+        // Rotate: take routes[start_idx..] + routes[..start_idx]
+        let mut rotated = Vec::with_capacity(n);
+        for i in start_idx..n {
+            rotated.push(opp.routes[i].clone());
+        }
+        for i in 0..start_idx {
+            rotated.push(opp.routes[i].clone());
+        }
+        // Verify the cycle still closes (last output == first input == home)
+        if let Some(last) = rotated.last() {
+            let last_output = self.currencies_for(&last.symbol).map(|(base, quote)| match last.side {
+                OrderSide::Buy => base.clone(),
+                OrderSide::Sell => quote.clone(),
+            });
+            if last_output.as_ref() != Some(home) {
+                return None; // rotation broke the cycle
+            }
+        }
+        Some(rotated)
+    }
+
     fn simulate_trade(&self, opp: &ta_core::ArbitrageOpportunity) -> Option<SimulatedTrade> {
-        let mut current_amount = self.config.starting_capital;
+        let routes = self.normalize_routes(opp)?;
+        let divisor = self.config.price_divisor;
+        let order_size = self.config.order_size;
+        let fee = self.config.fill_model.taker_fee_bps / 10_000.0;
         let mut legs = Vec::new();
 
-        for leg in &opp.routes {
+        // Compute the effective return through all 3 legs.
+        // Each leg's output/input conversion ratio gives the multiplicative return.
+        // For a cycle starting and ending in home_currency:
+        //   total_return = leg1_ratio * leg2_ratio * leg3_ratio * (1-fee)^3 - 1
+        let mut cumulative_return = 1.0_f64;
+
+        for leg in &routes {
             let book = self.sim.book(&leg.symbol)?;
             let (base, quote) = self.currencies_for(&leg.symbol)?.clone();
             let (input_cur, output_cur) = match leg.side {
@@ -421,38 +477,37 @@ impl BacktestEngine {
                 OrderSide::Sell => (base.clone(), quote.clone()),
             };
 
-            let order_size = self.config.order_size;
             let fill = self.config.fill_model.execute(leg.side, order_size, book);
             if fill.total_qty == 0 {
                 return None;
             }
 
-            let new_amount = match leg.side {
-                OrderSide::Buy => {
-                    current_amount / (fill.avg_price as f64)
-                        * (1.0 - self.config.fill_model.taker_fee_bps / 10_000.0)
-                }
-                OrderSide::Sell => {
-                    current_amount * (fill.avg_price as f64)
-                        * (1.0 - self.config.fill_model.taker_fee_bps / 10_000.0)
-                }
-            };
+            // Conversion ratio for this leg:
+            //   Buy:  we spend quote, receive base.  ratio = total_qty / (total_qty * norm_avg) = 1/norm_avg
+            //         better: we started with `size * norm_avg` quote and now have `size` base.
+            //         effective rate = base / quote = 1 / norm_avg
+            //   Sell: we spend base, receive quote. ratio = (total_qty * norm_avg) / total_qty = norm_avg
+            let norm_avg = fill.avg_price as f64 / divisor;
+            let leg_return = match leg.side {
+                OrderSide::Buy => 1.0 / norm_avg,
+                OrderSide::Sell => norm_avg,
+            } * (1.0 - fee);
+
+            cumulative_return *= leg_return;
 
             legs.push(LegFill {
                 symbol: leg.symbol.clone(),
                 side: leg.side,
                 input_currency: input_cur,
                 output_currency: output_cur,
-                input_amount: current_amount,
-                output_amount: new_amount,
+                input_amount: 0.0,
+                output_amount: 0.0,
                 fill,
             });
-
-            current_amount = new_amount;
         }
 
-        let profit_quote = current_amount - self.config.starting_capital;
-        let profit_bps = (profit_quote / self.config.starting_capital) * 10_000.0;
+        let profit_quote = self.config.starting_capital * (cumulative_return - 1.0);
+        let profit_bps = (cumulative_return - 1.0) * 10_000.0;
 
         Some(SimulatedTrade {
             ts_ns: opp.ts_ns,
@@ -463,7 +518,7 @@ impl BacktestEngine {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct RawTick {
     pub ts_ns: u64,
     pub venue: String,
@@ -779,6 +834,8 @@ mod tests {
             },
             fee_taker_bps: 0.0,
             max_data_age_ms: 60_000,
+            home_currency: "USDT".into(),
+            price_divisor: 1.0,
             symbols,
         };
 
@@ -836,6 +893,8 @@ mod tests {
             },
             fee_taker_bps: 0.0,
             max_data_age_ms: 60_000,
+            home_currency: "USDT".into(),
+            price_divisor: 1.0,
             symbols: vec![
                 SymbolMapping {
                     symbol: "BTCUSDT".into(),
@@ -886,9 +945,12 @@ mod tests {
         let first_line: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(first_line["executed"], true);
         assert!(first_line["profit_bps"].as_f64().unwrap() > 0.0);
-        assert_eq!(first_line["leg_a_symbol"], "ETHBTC");
-        assert_eq!(first_line["leg_b_symbol"], "BTCUSDT");
-        assert_eq!(first_line["leg_c_symbol"], "ETHUSDT");
+        // With route normalization to start at home_currency (USDT):
+        // original cycle ETH→BTC→USDT→ETH becomes USDT→ETH→BTC→USDT
+        // routes: Buy(ETHUSDT), Sell(ETHBTC), Sell(BTCUSDT)
+        assert_eq!(first_line["leg_a_symbol"], "ETHUSDT");
+        assert_eq!(first_line["leg_b_symbol"], "ETHBTC");
+        assert_eq!(first_line["leg_c_symbol"], "BTCUSDT");
         let _ = std::fs::remove_file(path);
     }
 
@@ -928,6 +990,8 @@ mod tests {
             },
             fee_taker_bps: 10.0,
             max_data_age_ms: 60_000,
+            home_currency: "USDT".into(),
+            price_divisor: 1.0,
             symbols,
         };
 
