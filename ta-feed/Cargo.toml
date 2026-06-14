@@ -14,3 +14,10 @@ serde.workspace = true
 serde_json.workspace = true
 dashmap.workspace = true
 rustc-hash.workspace = true
+
+[dev-dependencies]
+ta-detect.workspace = true
+ta-exec.workspace = true
+ta-core.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tracing-subscriber.workspace = true

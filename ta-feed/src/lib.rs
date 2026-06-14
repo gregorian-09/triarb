@@ -362,6 +362,187 @@ fn parse_currency(symbol: &SymbolId) -> (String, String) {
 mod tests {
     use super::*;
     use of_core::BookAction;
+    use ta_core::OrderSide;
+
+    /// Sets up book and graph data for a 3-currency triangle with a deliberate
+    /// cross-rate mispricing:
+    ///
+    ///   BTCUSDT: bid = 100, ask = 101
+    ///   ETHBTC:  bid =   1, ask =   2   (1 ETH = 1-2 BTC — cheap)
+    ///   ETHUSDT: bid =   1, ask =   2   (1 ETH = 1-2 USDT — cheap)
+    ///
+    /// Arbitrage path: sell BTC→USDT (100), buy ETH→BTC (2), buy USDT→ETH (1)
+    ///   → end with more USDT than you started.
+    fn build_triangle_data(
+        books: &mut FxHashMap<SymbolId, BookSnapshot>,
+        graph: &mut ExchangeRateGraph,
+    ) {
+        let btcusdt = SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() };
+        let ethbtc = SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() };
+        let ethusdt = SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() };
+
+        // BTCUSDT: bid = 100, ask = 101
+        FeedEngine::bench_apply_book_update(books, graph, BookUpdate {
+            symbol: btcusdt.clone(), side: Side::Bid, level: 0,
+            price: 100, size: 1000, action: BookAction::Upsert,
+            sequence: 1, ts_exchange_ns: 1, ts_recv_ns: 1,
+        });
+        FeedEngine::bench_apply_book_update(books, graph, BookUpdate {
+            symbol: btcusdt, side: Side::Ask, level: 0,
+            price: 101, size: 1000, action: BookAction::Upsert,
+            sequence: 2, ts_exchange_ns: 2, ts_recv_ns: 2,
+        });
+
+        // ETHBTC: bid = 1, ask = 2
+        FeedEngine::bench_apply_book_update(books, graph, BookUpdate {
+            symbol: ethbtc.clone(), side: Side::Bid, level: 0,
+            price: 1, size: 100_000, action: BookAction::Upsert,
+            sequence: 3, ts_exchange_ns: 3, ts_recv_ns: 3,
+        });
+        FeedEngine::bench_apply_book_update(books, graph, BookUpdate {
+            symbol: ethbtc.clone(), side: Side::Ask, level: 0,
+            price: 2, size: 100_000, action: BookAction::Upsert,
+            sequence: 4, ts_exchange_ns: 4, ts_recv_ns: 4,
+        });
+
+        // ETHUSDT: bid = 1, ask = 2
+        FeedEngine::bench_apply_book_update(books, graph, BookUpdate {
+            symbol: ethusdt.clone(), side: Side::Bid, level: 0,
+            price: 1, size: 100_000, action: BookAction::Upsert,
+            sequence: 5, ts_exchange_ns: 5, ts_recv_ns: 5,
+        });
+        FeedEngine::bench_apply_book_update(books, graph, BookUpdate {
+            symbol: ethusdt.clone(), side: Side::Ask, level: 0,
+            price: 2, size: 100_000, action: BookAction::Upsert,
+            sequence: 6, ts_exchange_ns: 6, ts_recv_ns: 6,
+        });
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_end_to_end() {
+        let mut books = FxHashMap::default();
+        let mut graph = ExchangeRateGraph::new();
+
+        build_triangle_data(&mut books, &mut graph);
+
+        // Verify graph has data
+        assert_eq!(graph.currencies().len(), 3, "expected 3 currencies");
+        assert!(graph.last_updated_at().elapsed().as_secs() < 1, "graph should be fresh");
+
+        // Detection
+        let detect = ta_detect::DetectionEngine::new(ta_detect::DetectionConfig {
+            min_profit_bps: 0.01,
+            fee_taker_bps: 0.0,
+            max_data_age: std::time::Duration::from_secs(60),
+            ..Default::default()
+        });
+        let opportunities = detect.detect(&graph);
+        assert!(!opportunities.is_empty(), "expected at least one opportunity");
+
+        let opp = &opportunities[0];
+        assert_eq!(opp.routes.len(), 3, "expected 3 legs");
+        for leg in &opp.routes {
+            assert!(!leg.symbol.symbol.is_empty(), "symbol should not be empty");
+            assert!(
+                matches!(leg.side, OrderSide::Buy | OrderSide::Sell),
+                "side should be Buy or Sell"
+            );
+        }
+        assert!(opp.expected_profit_bps > 0.0, "profit should be positive");
+
+        // Enrichment (simulate what enrich_opportunity does)
+        let mut enriched = opp.clone();
+        for leg in &mut enriched.routes {
+            if let Some(book) = books.get(&leg.symbol) {
+                match leg.side {
+                    OrderSide::Buy => {
+                        if let Some(ask) = book.asks.first() {
+                            leg.price = ask.price;
+                            leg.size = ask.size;
+                        }
+                    }
+                    OrderSide::Sell => {
+                        if let Some(bid) = book.bids.first() {
+                            leg.price = bid.price;
+                            leg.size = bid.size;
+                        }
+                    }
+                }
+            }
+        }
+        for leg in &enriched.routes {
+            assert!(leg.price > 0, "price should be enriched");
+            assert!(leg.size > 0, "size should be enriched");
+        }
+
+        // Execution
+        let mut exec = ta_exec::ExecEngine::new(Default::default());
+        let result = exec.execute_opportunity(&enriched, &books);
+        // In mock mode execution will either succeed or fail gracefully
+        // — the important thing is it doesn't panic
+        tracing::debug!(?result, "execution result");
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_no_false_positive() {
+        let mut books = FxHashMap::default();
+        let mut graph = ExchangeRateGraph::new();
+
+        // Consistent cross-rates — no arbitrage
+        let btcusdt = SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() };
+        let ethbtc = SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() };
+        let ethusdt = SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() };
+
+        // BTCUSDT: bid = 100, ask = 101
+        FeedEngine::bench_apply_book_update(&mut books, &mut graph, BookUpdate {
+            symbol: btcusdt.clone(), side: Side::Bid, level: 0,
+            price: 100, size: 1000, action: BookAction::Upsert,
+            sequence: 1, ts_exchange_ns: 1, ts_recv_ns: 1,
+        });
+        FeedEngine::bench_apply_book_update(&mut books, &mut graph, BookUpdate {
+            symbol: btcusdt, side: Side::Ask, level: 0,
+            price: 101, size: 1000, action: BookAction::Upsert,
+            sequence: 2, ts_exchange_ns: 2, ts_recv_ns: 2,
+        });
+
+        // ETHBTC: bid = 50, ask = 51  → 1 ETH = 50-51 BTC
+        FeedEngine::bench_apply_book_update(&mut books, &mut graph, BookUpdate {
+            symbol: ethbtc.clone(), side: Side::Bid, level: 0,
+            price: 50, size: 1000, action: BookAction::Upsert,
+            sequence: 3, ts_exchange_ns: 3, ts_recv_ns: 3,
+        });
+        FeedEngine::bench_apply_book_update(&mut books, &mut graph, BookUpdate {
+            symbol: ethbtc, side: Side::Ask, level: 0,
+            price: 51, size: 1000, action: BookAction::Upsert,
+            sequence: 4, ts_exchange_ns: 4, ts_recv_ns: 4,
+        });
+
+        // ETHUSDT: bid = 5000, ask = 5100  → 1 ETH = 5000-5100 USDT
+        FeedEngine::bench_apply_book_update(&mut books, &mut graph, BookUpdate {
+            symbol: ethusdt.clone(), side: Side::Bid, level: 0,
+            price: 5000, size: 1000, action: BookAction::Upsert,
+            sequence: 5, ts_exchange_ns: 5, ts_recv_ns: 5,
+        });
+        FeedEngine::bench_apply_book_update(&mut books, &mut graph, BookUpdate {
+            symbol: ethusdt, side: Side::Ask, level: 0,
+            price: 5100, size: 1000, action: BookAction::Upsert,
+            sequence: 6, ts_exchange_ns: 6, ts_recv_ns: 6,
+        });
+
+        // Cross-rates are consistent: 50 BTC/ETH × 100 USDT/BTC = 5000 USDT/ETH
+        let detect = ta_detect::DetectionEngine::new(ta_detect::DetectionConfig {
+            min_profit_bps: 0.01,
+            fee_taker_bps: 0.0,
+            max_data_age: std::time::Duration::from_secs(60),
+            ..Default::default()
+        });
+        let opportunities = detect.detect(&graph);
+        assert!(
+            opportunities.is_empty(),
+            "consistent rates should not produce arbitrage, got {}",
+            opportunities.len()
+        );
+    }
 
     #[test]
     fn test_parse_currency() {

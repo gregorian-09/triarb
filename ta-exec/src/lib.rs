@@ -3,12 +3,14 @@ mod hedge;
 mod journal;
 mod order_timeout;
 mod price_check;
+mod risk;
 
 pub use clock_skew::*;
 pub use hedge::*;
 pub use journal::*;
 pub use order_timeout::*;
 pub use price_check::*;
+pub use risk::*;
 
 use of_core::{BookSnapshot, SymbolId};
 use of_execution::InMemoryJournal;
@@ -30,6 +32,7 @@ pub(crate) fn nanos() -> u64 {
         .as_nanos() as u64
 }
 
+#[derive(Clone)]
 pub struct ExecConfig {
     pub route_id: RouteId,
     pub account_id: AccountId,
@@ -39,6 +42,7 @@ pub struct ExecConfig {
     pub journal_path: Option<PathBuf>,
     pub price_tolerance: PriceTolerance,
     pub order_timeout: Duration,
+    pub risk_config: RiskConfig,
 }
 
 impl Default for ExecConfig {
@@ -51,6 +55,7 @@ impl Default for ExecConfig {
             journal_path: None,
             price_tolerance: PriceTolerance::default(),
             order_timeout: Duration::from_secs(5),
+            risk_config: RiskConfig::default(),
         }
     }
 }
@@ -65,6 +70,7 @@ pub struct ExecEngine {
     price_checker: PriceChecker,
     gc_counter: u64,
     order_tracker: OrderTimeoutTracker,
+    risk: RiskController,
     next_order_seq: u64,
 }
 
@@ -105,6 +111,7 @@ impl ExecEngine {
                 }
             });
 
+        let risk_cfg = config.risk_config.clone();
         let order_timeout = config.order_timeout;
         let price_tolerance = config.price_tolerance;
         let dedup_ttl = config.dedup_ttl;
@@ -121,6 +128,7 @@ impl ExecEngine {
             order_tracker: OrderTimeoutTracker::new(OrderTimeoutConfig {
                 submission_timeout: order_timeout,
             }),
+            risk: RiskController::new(risk_cfg),
             next_order_seq: 1,
         }
     }
@@ -144,13 +152,27 @@ impl ExecEngine {
 
         self.periodic_gc();
 
-        // 2. Pre-submission price check
+        // 2. Global risk check (circuit breaker, daily cap)
+        if let Err(rejection) = self.risk.check() {
+            tracing::warn!(?opp_id, error = %rejection, "risk check failed, aborting");
+            return Ok(OpportunityResult::RiskRejected(rejection.to_string()));
+        }
+
+        // 3. Per-symbol notional check
+        for leg in &opp.routes {
+            if let Err(rejection) = self.risk.check_symbol_notional(&leg.symbol, leg.size) {
+                tracing::warn!(?opp_id, error = %rejection, "notional check failed, aborting");
+                return Ok(OpportunityResult::RiskRejected(rejection.to_string()));
+            }
+        }
+
+        // 4. Pre-submission price check
         if let Err(failure) = self.price_checker.check_opportunity(&opp.routes, books) {
             tracing::warn!(?opp_id, error = %failure, "price check failed, aborting");
             return Ok(OpportunityResult::PriceCheckFailed(failure.reason.clone()));
         }
 
-        // 3. Execute each leg
+        // 5. Execute each leg
         let mut state = FillState::new(opp_id);
         let leg_count = opp.routes.len().min(3);
 
@@ -168,11 +190,12 @@ impl ExecEngine {
                 log.record_intent(&opp_id, venue, symbol, side);
             }
 
-            match self.submit_leg(opp, leg_idx) {
-                Ok(()) => {
-                    state.fill_leg(leg_idx);
-                    self.order_tracker.resolve_leg(&opp_id, leg_idx);
-                    if let Some(ref mut log) = self.journal {
+                    match self.submit_leg(opp, leg_idx) {
+                        Ok(()) => {
+                            state.fill_leg(leg_idx);
+                            self.order_tracker.resolve_leg(&opp_id, leg_idx);
+                            self.risk.record_success(leg.size, &leg.symbol);
+                            if let Some(ref mut log) = self.journal {
                         log.record_fill(
                             &opp_id,
                             leg_idx,
@@ -186,6 +209,7 @@ impl ExecEngine {
                 Err(e) => {
                     state.fail_leg(leg_idx);
                     self.order_tracker.resolve_leg(&opp_id, leg_idx);
+                    self.risk.record_failure();
                     if let Some(ref mut log) = self.journal {
                         log.record_fail(&opp_id, leg_idx, &e.to_string());
                     }
@@ -403,6 +427,7 @@ pub enum OpportunityResult {
     TimedOut(FillState),
     Failed,
     PriceCheckFailed(String),
+    RiskRejected(String),
 }
 
 #[cfg(test)]

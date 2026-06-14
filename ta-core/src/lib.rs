@@ -21,6 +21,7 @@ pub struct Triangle {
     pub opportunity_bps: f64,
 }
 
+#[derive(Clone)]
 pub struct ArbitrageOpportunity {
     pub triangle: Triangle,
     pub routes: Vec<RouteLeg>,
