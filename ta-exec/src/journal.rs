@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::fs::{File, OpenOptions};
 
 use ta_core::OpportunityId;
 

@@ -11,11 +11,11 @@ pub use order_timeout::*;
 pub use price_check::*;
 
 use of_core::{BookSnapshot, SymbolId};
-use of_execution::{ExecutionEngine, ExecutionEventBuffer, RouteConfig, SimExecutionAdapter};
 use of_execution::InMemoryJournal;
+use of_execution::{ExecutionEngine, ExecutionEventBuffer, RouteConfig, SimExecutionAdapter};
 use of_execution_core::{
-    AccountId, ClientOrderId, ExecutionSymbol, FixedAscii, OrderPrice, OrderQty,
-    OrderRequest, OrderType, RiskLimits, RouteId, StrategyId, TimeInForce,
+    AccountId, ClientOrderId, ExecutionSymbol, FixedAscii, OrderPrice, OrderQty, OrderRequest,
+    OrderType, RiskLimits, RouteId, StrategyId, TimeInForce,
 };
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
@@ -91,8 +91,10 @@ impl ExecEngine {
         let mut engine = of_execution::simulated_engine_with_routes(routes);
         let _ = engine.start();
 
-        let journal = config.journal_path.clone().map(|path| {
-            match FileOrderLog::open(&path) {
+        let journal = config
+            .journal_path
+            .clone()
+            .map(|path| match FileOrderLog::open(&path) {
                 Ok(log) => {
                     log.report_unacknowledged();
                     log
@@ -101,8 +103,7 @@ impl ExecEngine {
                     tracing::error!("failed to open journal at {path:?}: {e}");
                     FileOrderLog::open(&path).expect("journal must be openable")
                 }
-            }
-        });
+            });
 
         let order_timeout = config.order_timeout;
         let price_tolerance = config.price_tolerance;
@@ -146,9 +147,7 @@ impl ExecEngine {
         // 2. Pre-submission price check
         if let Err(failure) = self.price_checker.check_opportunity(&opp.routes, books) {
             tracing::warn!(?opp_id, error = %failure, "price check failed, aborting");
-            return Ok(OpportunityResult::PriceCheckFailed(
-                failure.reason.clone(),
-            ));
+            return Ok(OpportunityResult::PriceCheckFailed(failure.reason.clone()));
         }
 
         // 3. Execute each leg
@@ -222,7 +221,11 @@ impl ExecEngine {
         // 5. Report success
         if state.is_fully_filled() {
             self.order_tracker.resolve_opportunity(&opp_id);
-            tracing::info!(?opp_id, profit_bps = opp.expected_profit_bps, "opportunity fully filled");
+            tracing::info!(
+                ?opp_id,
+                profit_bps = opp.expected_profit_bps,
+                "opportunity fully filled"
+            );
             return Ok(OpportunityResult::Filled(state));
         }
 
@@ -405,7 +408,7 @@ pub enum OpportunityResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ta_core::{Triangle, RouteLeg, OrderSide, of_core::SymbolId};
+    use ta_core::{of_core::SymbolId, OrderSide, RouteLeg, Triangle};
 
     fn dummy_opportunity() -> ArbitrageOpportunity {
         ArbitrageOpportunity {
@@ -416,10 +419,34 @@ mod tests {
                 opportunity_bps: 15.0,
             },
             routes: vec![
-                RouteLeg { symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() }, side: OrderSide::Buy, price: 50000_00_000_000, size: 100 },
+                RouteLeg {
+                    symbol: SymbolId {
+                        venue: "BINANCE".into(),
+                        symbol: "BTCUSDT".into(),
+                    },
+                    side: OrderSide::Buy,
+                    price: 50000_00_000_000,
+                    size: 100,
+                },
                 // BTC→ETH: buy ETH with BTC → Buy on ETHBTC
-                RouteLeg { symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() }, side: OrderSide::Buy, price: 5000_00_000_000, size: 100 },
-                RouteLeg { symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() }, side: OrderSide::Sell, price: 3000_00_000_000, size: 100 },
+                RouteLeg {
+                    symbol: SymbolId {
+                        venue: "BINANCE".into(),
+                        symbol: "ETHBTC".into(),
+                    },
+                    side: OrderSide::Buy,
+                    price: 5000_00_000_000,
+                    size: 100,
+                },
+                RouteLeg {
+                    symbol: SymbolId {
+                        venue: "BINANCE".into(),
+                        symbol: "ETHUSDT".into(),
+                    },
+                    side: OrderSide::Sell,
+                    price: 3000_00_000_000,
+                    size: 100,
+                },
             ],
             expected_profit_bps: 5.0,
             ts_ns: 0,
@@ -430,16 +457,45 @@ mod tests {
         use of_core::BookLevel;
         let mut books = FxHashMap::default();
         let mk = |sym: &str, bid: i64, ask: i64| BookSnapshot {
-            symbol: SymbolId { venue: "BINANCE".into(), symbol: sym.into() },
-            bids: vec![BookLevel { price: bid, size: 100_000, level: 0 }],
-            asks: vec![BookLevel { price: ask, size: 100_000, level: 0 }],
+            symbol: SymbolId {
+                venue: "BINANCE".into(),
+                symbol: sym.into(),
+            },
+            bids: vec![BookLevel {
+                price: bid,
+                size: 100_000,
+                level: 0,
+            }],
+            asks: vec![BookLevel {
+                price: ask,
+                size: 100_000,
+                level: 0,
+            }],
             last_sequence: 0,
             ts_exchange_ns: 0,
             ts_recv_ns: 0,
         };
-        books.insert(SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() }, mk("BTCUSDT", 50000_00_000_000, 50001_00_000_000));
-        books.insert(SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() }, mk("ETHBTC", 5000_00_000_000, 5001_00_000_000));
-        books.insert(SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() }, mk("ETHUSDT", 3000_00_000_000, 3001_00_000_000));
+        books.insert(
+            SymbolId {
+                venue: "BINANCE".into(),
+                symbol: "BTCUSDT".into(),
+            },
+            mk("BTCUSDT", 50000_00_000_000, 50001_00_000_000),
+        );
+        books.insert(
+            SymbolId {
+                venue: "BINANCE".into(),
+                symbol: "ETHBTC".into(),
+            },
+            mk("ETHBTC", 5000_00_000_000, 5001_00_000_000),
+        );
+        books.insert(
+            SymbolId {
+                venue: "BINANCE".into(),
+                symbol: "ETHUSDT".into(),
+            },
+            mk("ETHUSDT", 3000_00_000_000, 3001_00_000_000),
+        );
         books
     }
 

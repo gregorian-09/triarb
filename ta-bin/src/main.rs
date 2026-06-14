@@ -7,7 +7,7 @@ use std::time::Duration;
 use ta_config::{Config, ConfigError};
 use ta_core::{ArbitrageOpportunity, OrderSide};
 use ta_detect::{DetectionConfig, DetectionEngine};
-use ta_exec::{check_ntp, ExecEngine, MAX_CLOCK_SKEW_MS, DEFAULT_NTP_SERVER};
+use ta_exec::{check_ntp, ExecEngine, DEFAULT_NTP_SERVER, MAX_CLOCK_SKEW_MS};
 use ta_feed::{FeedConfig, FeedEngine};
 use tokio::signal;
 

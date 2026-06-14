@@ -113,10 +113,7 @@ mod tests {
         let back = ntp_to_nanos(now);
         let sys = nanos();
         let diff = if back > sys { back - sys } else { sys - back };
-        assert!(
-            diff < 10_000_000,
-            "NTP conversion off by {diff}ns"
-        );
+        assert!(diff < 10_000_000, "NTP conversion off by {diff}ns");
     }
 
     #[test]
@@ -128,7 +125,11 @@ mod tests {
                 "NTP offset implausible: {}ms",
                 skew.offset_ms
             );
-            assert!(skew.delay_ms < 10_000, "NTP delay implausible: {}ms", skew.delay_ms);
+            assert!(
+                skew.delay_ms < 10_000,
+                "NTP delay implausible: {}ms",
+                skew.delay_ms
+            );
         }
     }
 }

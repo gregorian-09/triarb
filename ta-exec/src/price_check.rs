@@ -51,10 +51,14 @@ impl PriceChecker {
         };
 
         let top = top.ok_or_else(|| PriceCheckFailure {
-            reason: format!("no {} side liquidity for {}", match leg.side {
-                ta_core::OrderSide::Buy => "ask",
-                ta_core::OrderSide::Sell => "bid",
-            }, leg.symbol.symbol),
+            reason: format!(
+                "no {} side liquidity for {}",
+                match leg.side {
+                    ta_core::OrderSide::Buy => "ask",
+                    ta_core::OrderSide::Sell => "bid",
+                },
+                leg.symbol.symbol
+            ),
         })?;
 
         let current_price = top.price;
@@ -116,8 +120,16 @@ mod tests {
                 venue: "BINANCE".into(),
                 symbol: "BTCUSDT".into(),
             },
-            bids: vec![BookLevel { price: bid_price, size: 100_000, level: 0 }],
-            asks: vec![BookLevel { price: ask_price, size: 100_000, level: 0 }],
+            bids: vec![BookLevel {
+                price: bid_price,
+                size: 100_000,
+                level: 0,
+            }],
+            asks: vec![BookLevel {
+                price: ask_price,
+                size: 100_000,
+                level: 0,
+            }],
             last_sequence: 0,
             ts_exchange_ns: 0,
             ts_recv_ns: 0,
@@ -128,7 +140,10 @@ mod tests {
     fn test_price_check_accepts_good_price() {
         let checker = PriceChecker::default();
         let leg = RouteLeg {
-            symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+            symbol: SymbolId {
+                venue: "BINANCE".into(),
+                symbol: "BTCUSDT".into(),
+            },
             side: OrderSide::Buy,
             price: 50000_00_000_000,
             size: 100,
@@ -141,7 +156,10 @@ mod tests {
     fn test_price_check_rejects_excessive_slippage() {
         let checker = PriceChecker::default();
         let leg = RouteLeg {
-            symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+            symbol: SymbolId {
+                venue: "BINANCE".into(),
+                symbol: "BTCUSDT".into(),
+            },
             side: OrderSide::Buy,
             price: 50000_00_000_000,
             size: 100,
@@ -155,15 +173,25 @@ mod tests {
     fn test_price_check_no_liquidity() {
         let checker = PriceChecker::default();
         let leg = RouteLeg {
-            symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+            symbol: SymbolId {
+                venue: "BINANCE".into(),
+                symbol: "BTCUSDT".into(),
+            },
             side: OrderSide::Sell,
             price: 50000_00_000_000,
             size: 100,
         };
         let book = BookSnapshot {
-            symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
-            bids: vec![],  // no bids
-            asks: vec![BookLevel { price: 50001_00_000_000, size: 100, level: 0 }],
+            symbol: SymbolId {
+                venue: "BINANCE".into(),
+                symbol: "BTCUSDT".into(),
+            },
+            bids: vec![], // no bids
+            asks: vec![BookLevel {
+                price: 50001_00_000_000,
+                size: 100,
+                level: 0,
+            }],
             last_sequence: 0,
             ts_exchange_ns: 0,
             ts_recv_ns: 0,

@@ -77,8 +77,10 @@ impl SimulatedExchange {
         let tick = self.ticks.get(self.current_idx)?;
         self.current_idx += 1;
 
-        let snap = self.books.entry(tick.symbol.clone()).or_insert_with(|| {
-            BookSnapshot {
+        let snap = self
+            .books
+            .entry(tick.symbol.clone())
+            .or_insert_with(|| BookSnapshot {
                 symbol: tick.symbol.clone(),
                 bids: vec![BookLevel {
                     price: tick.bid,
@@ -93,8 +95,7 @@ impl SimulatedExchange {
                 last_sequence: self.current_idx as u64,
                 ts_exchange_ns: tick.ts_ns,
                 ts_recv_ns: tick.ts_ns,
-            }
-        });
+            });
 
         if let Some(bid) = snap.bids.first_mut() {
             bid.price = tick.bid;

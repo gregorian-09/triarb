@@ -97,9 +97,7 @@ impl FeedEngine {
             connected: self.connected,
             last_message_at: self.last_message_at,
             consecutive_errors: self.consecutive_errors,
-            degraded: !self.connected
-                || self.consecutive_errors >= 5
-                || self.is_stale(),
+            degraded: !self.connected || self.consecutive_errors >= 5 || self.is_stale(),
         }
     }
 
@@ -148,7 +146,10 @@ impl FeedEngine {
             }
             Err(e) => {
                 self.consecutive_errors += 1;
-                tracing::warn!("poll error ({}/5 consecutive): {e}", self.consecutive_errors);
+                tracing::warn!(
+                    "poll error ({}/5 consecutive): {e}",
+                    self.consecutive_errors
+                );
                 if self.consecutive_errors >= 5 {
                     tracing::error!("feed degraded: too many consecutive poll errors");
                 }
@@ -185,7 +186,7 @@ impl FeedEngine {
         FeedEngine::apply_book_update(books, update, graph);
     }
 
-fn apply_book_update(
+    fn apply_book_update(
         books: &mut FxHashMap<SymbolId, BookSnapshot>,
         update: BookUpdate,
         graph: &mut ExchangeRateGraph,
@@ -213,7 +214,10 @@ fn apply_book_update(
 
         match update.action {
             of_core::BookAction::Upsert => {
-                if let Some(existing) = levels.iter_mut().find(|l: &&mut BookLevel| l.level == update.level) {
+                if let Some(existing) = levels
+                    .iter_mut()
+                    .find(|l: &&mut BookLevel| l.level == update.level)
+                {
                     existing.price = update.price;
                     existing.size = update.size;
                 } else {

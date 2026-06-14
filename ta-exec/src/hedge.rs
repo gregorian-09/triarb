@@ -40,13 +40,19 @@ mod tests {
             },
             routes: vec![
                 RouteLeg {
-                    symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+                    symbol: SymbolId {
+                        venue: "BINANCE".into(),
+                        symbol: "BTCUSDT".into(),
+                    },
                     side: OrderSide::Buy,
                     price: 50000_00_000_000,
                     size: 100,
                 },
                 RouteLeg {
-                    symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() },
+                    symbol: SymbolId {
+                        venue: "BINANCE".into(),
+                        symbol: "ETHBTC".into(),
+                    },
                     side: OrderSide::Sell,
                     price: 5000_00_000_000,
                     size: 50,

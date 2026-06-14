@@ -1,7 +1,7 @@
 pub use of_core;
 use of_core::SymbolId;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 pub type Currency = String;
@@ -156,8 +156,7 @@ impl FillState {
     }
 
     pub fn has_partial_fill(&self) -> bool {
-        self.legs.iter().any(|s| *s == LegFillStatus::Filled)
-            && !self.is_fully_filled()
+        self.legs.iter().any(|s| *s == LegFillStatus::Filled) && !self.is_fully_filled()
     }
 
     pub fn has_failure(&self) -> bool {
@@ -318,26 +317,32 @@ impl ExchangeRateGraph {
         }
         let mut dist = vec![f64::INFINITY; n];
         let mut pred = vec![0usize; n];
-        dist[0] = 0.0;
+        let mut in_queue = vec![false; n];
+        let mut count = vec![0usize; n];
+        let mut queue = VecDeque::new();
 
-        for _ in 0..n - 1 {
-            let mut changed = false;
-            for u in 0..n {
-                let du = dist[u];
-                if du == f64::INFINITY {
-                    continue;
-                }
-                for &(v, w) in &self.adjacency[u] {
-                    let dv = du + w;
-                    if dv < dist[v] {
-                        dist[v] = dv;
-                        pred[v] = u;
-                        changed = true;
+        dist[0] = 0.0;
+        queue.push_back(0);
+        in_queue[0] = true;
+
+        while let Some(u) = queue.pop_front() {
+            in_queue[u] = false;
+            let du = dist[u];
+            for &(v, w) in &self.adjacency[u] {
+                let dv = du + w;
+                if dv < dist[v] - 1e-12 {
+                    dist[v] = dv;
+                    pred[v] = u;
+                    if !in_queue[v] {
+                        count[v] += 1;
+                        if count[v] >= n {
+                            queue.clear();
+                            break;
+                        }
+                        queue.push_back(v);
+                        in_queue[v] = true;
                     }
                 }
-            }
-            if !changed {
-                break;
             }
         }
 
@@ -370,8 +375,7 @@ impl ExchangeRateGraph {
                     // path stores nodes from u back to source (reversed cycle order).
                     // Reconstruct forward: v → reverse(path[..v_pos]) → v
                     let cycle = if let Some(v_pos) = path.iter().rposition(|&x| x == v) {
-                        let mut c: Vec<usize> =
-                            path[..v_pos].iter().rev().copied().collect();
+                        let mut c: Vec<usize> = path[..v_pos].iter().rev().copied().collect();
                         c.insert(0, v);
                         c.push(v);
                         c
@@ -490,10 +494,16 @@ mod tests {
         g.set_rate(&"ETH".into(), &"USDT".into(), 1, 2);
 
         let ops = g.detect();
-        assert!(!ops.is_empty(), "expected at least one arbitrage opportunity");
+        assert!(
+            !ops.is_empty(),
+            "expected at least one arbitrage opportunity"
+        );
 
         for (cycle, profit) in &ops {
-            assert!(cycle.len() >= 4, "cycle must have at least 4 nodes (start + 2 intermediate + end)");
+            assert!(
+                cycle.len() >= 4,
+                "cycle must have at least 4 nodes (start + 2 intermediate + end)"
+            );
             assert!(*profit > 0.0, "profit must be positive");
             // Verify the cycle starts and ends with the same currency
             assert_eq!(cycle.first(), cycle.last(), "cycle must be closed");
@@ -515,6 +525,9 @@ mod tests {
         let ops = g.detect();
         // With consistent cross-rates (50 BTC/ETH × 100 USDT/BTC = 5000 USDT/ETH matches direct)
         // there should be no arbitrage
-        assert!(ops.is_empty(), "consistent rates should not produce arbitrage");
+        assert!(
+            ops.is_empty(),
+            "consistent rates should not produce arbitrage"
+        );
     }
 }

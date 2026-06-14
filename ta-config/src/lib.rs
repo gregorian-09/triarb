@@ -82,7 +82,11 @@ impl Config {
         let okx = load_optional("OKX_API_KEY", "OKX_SECRET_KEY");
         let bybit = load_optional("BYBIT_API_KEY", "BYBIT_SECRET_KEY");
 
-        Ok(Self { binance, okx, bybit })
+        Ok(Self {
+            binance,
+            okx,
+            bybit,
+        })
     }
 
     /// Load configuration from AWS Secrets Manager (production).
@@ -106,12 +110,14 @@ impl Config {
 
         Ok(Self {
             binance: ExchangeCredentials::new(parsed.binance_api_key, parsed.binance_secret_key),
-            okx: parsed.okx_api_key.zip(parsed.okx_secret_key).map(
-                |(key, secret)| ExchangeCredentials::new(key, secret),
-            ),
-            bybit: parsed.bybit_api_key.zip(parsed.bybit_secret_key).map(
-                |(key, secret)| ExchangeCredentials::new(key, secret),
-            ),
+            okx: parsed
+                .okx_api_key
+                .zip(parsed.okx_secret_key)
+                .map(|(key, secret)| ExchangeCredentials::new(key, secret)),
+            bybit: parsed
+                .bybit_api_key
+                .zip(parsed.bybit_secret_key)
+                .map(|(key, secret)| ExchangeCredentials::new(key, secret)),
         })
     }
 
@@ -121,7 +127,10 @@ impl Config {
     /// `std::env::var` using the env var names in `CredentialsRef`.
     pub fn export_env(&self) {
         env::set_var("BINANCE_API_KEY", self.binance.api_key.expose_secret());
-        env::set_var("BINANCE_SECRET_KEY", self.binance.secret_key.expose_secret());
+        env::set_var(
+            "BINANCE_SECRET_KEY",
+            self.binance.secret_key.expose_secret(),
+        );
         if let Some(okx) = &self.okx {
             env::set_var("OKX_API_KEY", okx.api_key.expose_secret());
             env::set_var("OKX_SECRET_KEY", okx.secret_key.expose_secret());

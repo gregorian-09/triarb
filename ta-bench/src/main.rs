@@ -1,9 +1,9 @@
-use std::sync::Mutex;
 use divan::Bencher;
 use of_core::BookAction;
 use of_core::BookUpdate;
 use rand::Rng;
 use rustc_hash::FxHashMap;
+use std::sync::Mutex;
 use ta_core::ExchangeRateGraph;
 use ta_detect::{DetectionConfig, DetectionEngine};
 use ta_exec::{ExecConfig, ExecEngine};
@@ -84,7 +84,10 @@ fn graph_detect_sparse_500(bencher: Bencher) {
 fn graph_update(bencher: Bencher) {
     let graph = Mutex::new(build_graph(20));
     bencher.bench(|| {
-        graph.lock().unwrap().set_rate(&"CURR0".into(), &"CURR1".into(), 100_000, 100_050);
+        graph
+            .lock()
+            .unwrap()
+            .set_rate(&"CURR0".into(), &"CURR1".into(), 100_000, 100_050);
     });
 }
 
@@ -92,7 +95,10 @@ fn graph_update(bencher: Bencher) {
 fn graph_update_100(bencher: Bencher) {
     let graph = Mutex::new(build_graph(100));
     bencher.bench(|| {
-        graph.lock().unwrap().set_rate(&"CURR0".into(), &"CURR1".into(), 100_000, 100_050);
+        graph
+            .lock()
+            .unwrap()
+            .set_rate(&"CURR0".into(), &"CURR1".into(), 100_000, 100_050);
     });
 }
 
@@ -145,7 +151,13 @@ fn exec_engine_startup(bencher: Bencher) {
 
 // ── Feed apply_book_update latency ──────────────────────────────────
 
-fn book(symbol: of_core::SymbolId, side: of_core::Side, level: u16, price: i64, size: i64) -> BookUpdate {
+fn book(
+    symbol: of_core::SymbolId,
+    side: of_core::Side,
+    level: u16,
+    price: i64,
+    size: i64,
+) -> BookUpdate {
     BookUpdate {
         symbol,
         side,
@@ -174,13 +186,7 @@ fn feed_book_update_new_symbol(bencher: Bencher) {
         ta_feed::FeedEngine::bench_apply_book_update(
             &mut *books.lock().unwrap(),
             &mut *graph.lock().unwrap(),
-            book(
-                symbol.clone(),
-                of_core::Side::Bid,
-                0,
-                50000_00_000_000,
-                100,
-            ),
+            book(symbol.clone(), of_core::Side::Bid, 0, 50000_00_000_000, 100),
         );
     });
 }
@@ -224,13 +230,7 @@ fn feed_book_update_existing_10_levels(bencher: Bencher) {
         ta_feed::FeedEngine::bench_apply_book_update(
             &mut *books.lock().unwrap(),
             &mut *graph.lock().unwrap(),
-            book(
-                symbol.clone(),
-                of_core::Side::Bid,
-                0,
-                50002_00_000_000,
-                150,
-            ),
+            book(symbol.clone(), of_core::Side::Bid, 0, 50002_00_000_000, 150),
         );
     });
 }
