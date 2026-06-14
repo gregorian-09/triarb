@@ -16,9 +16,15 @@ ta-detect.workspace = true
 ta-exec.workspace = true
 ta-sim.workspace = true
 of_core.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "signal"] }
+tokio = { workspace = true, features = ["rt", "macros", "signal", "net"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tracing-appender.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 rustc-hash.workspace = true
+serde.workspace = true
+toml.workspace = true
+axum.workspace = true
+prometheus.workspace = true
+tokio-util.workspace = true

@@ -45,15 +45,27 @@ impl FeedHealth {
     }
 }
 
+const RECONNECT_BASE_MS: u64 = 250;
+const RECONNECT_MAX_MS: u64 = 30_000;
+
+#[derive(Default)]
+pub struct FeedCounters {
+    pub books: u64,
+    pub trades: u64,
+}
+
 pub struct FeedEngine {
     adapter: Box<dyn MarketDataAdapter + Send>,
     books: Arc<RwLock<FxHashMap<SymbolId, BookSnapshot>>>,
     graph: Arc<RwLock<ExchangeRateGraph>>,
-    _subscribed: Vec<SymbolId>,
+    subscribed: Vec<SymbolId>,
     connected: bool,
     last_message_at: Option<Instant>,
     consecutive_errors: u32,
     config: FeedConfig,
+    reconnect_attempt: u32,
+    next_reconnect_at: Option<Instant>,
+    counters: FeedCounters,
 }
 
 impl FeedEngine {
@@ -75,11 +87,14 @@ impl FeedEngine {
             adapter,
             books: Arc::new(RwLock::new(FxHashMap::default())),
             graph: Arc::new(RwLock::new(ExchangeRateGraph::new())),
-            _subscribed: Vec::new(),
+            subscribed: Vec::new(),
             connected: false,
             last_message_at: None,
             consecutive_errors: 0,
             config,
+            reconnect_attempt: 0,
+            next_reconnect_at: None,
+            counters: FeedCounters::default(),
         }
     }
 
@@ -89,6 +104,10 @@ impl FeedEngine {
 
     pub fn graph_reader(&self) -> Arc<RwLock<ExchangeRateGraph>> {
         self.graph.clone()
+    }
+
+    pub fn counters(&self) -> &FeedCounters {
+        &self.counters
     }
 
     /// Returns a snapshot of current feed health.
@@ -113,14 +132,62 @@ impl FeedEngine {
             Ok(_) => {
                 self.connected = true;
                 self.consecutive_errors = 0;
+                self.reconnect_attempt = 0;
+                self.next_reconnect_at = None;
                 tracing::info!("feed connected");
             }
             Err(e) => {
                 self.connected = false;
                 self.consecutive_errors += 1;
                 tracing::error!("feed connect failed: {e}");
+                self.schedule_reconnect();
             }
         }
+    }
+
+    pub async fn try_reconnect(&mut self) {
+        if self.connected {
+            return;
+        }
+        let due = self
+            .next_reconnect_at
+            .map(|t| Instant::now() >= t)
+            .unwrap_or(true);
+        if !due {
+            return;
+        }
+        tracing::info!(
+            attempt = self.reconnect_attempt,
+            "attempting feed reconnect"
+        );
+        if self.adapter.connect().is_ok() {
+            self.connected = true;
+            self.consecutive_errors = 0;
+            self.reconnect_attempt = 0;
+            self.next_reconnect_at = None;
+            tracing::info!("feed reconnected");
+            for sym in &self.subscribed {
+                let _ = self.adapter.subscribe(SubscribeReq {
+                    symbol: sym.clone(),
+                    depth_levels: TOP_DEPTH,
+                });
+            }
+        } else {
+            self.consecutive_errors += 1;
+            self.schedule_reconnect();
+        }
+    }
+
+    fn schedule_reconnect(&mut self) {
+        self.reconnect_attempt = self.reconnect_attempt.saturating_add(1);
+        let delay = (RECONNECT_BASE_MS.saturating_mul(1u64 << self.reconnect_attempt.min(7)))
+            .min(RECONNECT_MAX_MS);
+        self.next_reconnect_at = Some(Instant::now() + Duration::from_millis(delay));
+        tracing::warn!(
+            attempt = self.reconnect_attempt,
+            delay_ms = delay,
+            "feed reconnect scheduled"
+        );
     }
 
     pub async fn subscribe(&mut self, symbol: SymbolId) {
@@ -129,7 +196,7 @@ impl FeedEngine {
             depth_levels: TOP_DEPTH,
         }) {
             Ok(_) => {
-                self._subscribed.push(symbol);
+                self.subscribed.push(symbol);
             }
             Err(e) => {
                 self.consecutive_errors += 1;
@@ -139,6 +206,12 @@ impl FeedEngine {
     }
 
     pub async fn poll(&mut self) {
+        // Attempt reconnection if disconnected
+        if !self.connected {
+            self.try_reconnect().await;
+            return;
+        }
+
         let mut events = Vec::new();
         match self.adapter.poll(&mut events) {
             Ok(_) => {
@@ -152,6 +225,8 @@ impl FeedEngine {
                 );
                 if self.consecutive_errors >= 5 {
                     tracing::error!("feed degraded: too many consecutive poll errors");
+                    self.connected = false;
+                    self.schedule_reconnect();
                 }
                 return;
             }
@@ -168,10 +243,12 @@ impl FeedEngine {
 
         for event in events {
             match event {
-                RawEvent::Book(update) => {
-                    Self::apply_book_update(&mut books, update, &mut graph);
+                RawEvent::Book(_update) => {
+                    self.counters.books += 1;
+                    Self::apply_book_update(&mut books, _update, &mut graph);
                 }
                 RawEvent::Trade(trade) => {
+                    self.counters.trades += 1;
                     Self::apply_trade(&mut books, trade);
                 }
             }

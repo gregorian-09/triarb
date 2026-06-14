@@ -1,0 +1,38 @@
+# Triangular Arbitrage Bot — Production Configuration
+# Copy to production.toml and customize.
+
+# Exchange WebSocket endpoint
+endpoint = "wss://stream.binance.com:9443/ws"
+
+# Trading pairs to subscribe to
+symbols = ["BTCUSDT", "ETHUSDT", "ETHBTC"]
+
+# Metrics HTTP server port (Prometheus scrape + health check)
+metrics_port = 9100
+
+[feed]
+# Seconds without a message before feed is considered stale
+message_timeout_secs = 10
+# Milliseconds between poll cycles
+poll_interval_ms = 50
+# Exponential backoff for reconnection (milliseconds)
+reconnect_base_ms = 250
+reconnect_max_ms = 30_000
+
+[detect]
+# Minimum profit in basis points (before fees)
+min_profit_bps = 10
+# Maximum number of legs in an arbitrage path
+max_legs = 3
+# Taker fee in basis points per leg
+fee_taker_bps = 10
+# Maximum age of graph data in milliseconds before skipping detection
+max_data_age_ms = 200
+
+[logging]
+# Directory for log files (omit for stdout only)
+directory = "/var/log/ta-bot"
+# Log level: trace, debug, info, warn, error
+level = "info"
+# Log format: "json" for structured, "plain" for human-readable
+format = "json"

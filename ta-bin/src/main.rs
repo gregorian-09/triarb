@@ -1,33 +1,52 @@
 mod cli;
+mod config;
+mod metrics;
 
 use clap::Parser;
-use of_core::{BookSnapshot, SymbolId};
-use rustc_hash::FxHashMap;
-use std::time::Duration;
+use config::AppConfig;
+use metrics::serve_metrics;
+use of_core::SymbolId;
+use std::time::Instant;
 use ta_config::{Config, ConfigError};
-use ta_core::{ArbitrageOpportunity, OrderSide};
 use ta_detect::{DetectionConfig, DetectionEngine};
-use ta_exec::{check_ntp, ExecEngine, DEFAULT_NTP_SERVER, MAX_CLOCK_SKEW_MS};
+use ta_exec::ExecEngine;
 use ta_feed::{FeedConfig, FeedEngine};
 use tokio::signal;
 
 fn main() -> anyhow::Result<()> {
     let args = cli::Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // Load app config (symbols, endpoints, logging, etc.)
+    let app_cfg = match &args.config {
+        Some(path) => AppConfig::from_file(path.as_path())?,
+        None => AppConfig::default(),
+    };
 
-    let config = load_config(&args)?;
-    config.export_env();
-    tracing::info!("config loaded");
+    // Initialize logging
+    init_logging(&app_cfg);
+
+    // Load exchange credentials
+    let creds = load_config(&args).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "no exchange credentials — running in read-only mode");
+        None
+    });
+    if let Some(ref creds) = creds {
+        creds.export_env();
+    }
 
     tracing::info!("triangular arbitrage bot starting");
+    tracing::info!(symbols = ?app_cfg.symbols, endpoint = ?app_cfg.endpoint, "config");
+
+    // Start metrics + health HTTP server
+    let metrics_port = app_cfg.metrics_port;
+    tokio::spawn(async move {
+        serve_metrics(metrics_port).await;
+    });
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         tokio::select! {
-            _ = run_loop() => {}
+            _ = run_loop(app_cfg) => {}
             _ = shutdown_signal() => {
                 tracing::info!("shutdown signal received, draining...");
                 drain().await;
@@ -39,72 +58,89 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_loop() {
-    tracing::info!("main loop started");
+fn init_logging(cfg: &AppConfig) {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&cfg.logging.level));
 
-    // Check NTP clock sync before touching any exchange API
-    match tokio::task::spawn_blocking(|| check_ntp(DEFAULT_NTP_SERVER)).await {
-        Ok(Some(skew)) => {
-            if skew.is_safe() {
-                tracing::info!(
-                    offset_ms = skew.offset_ms,
-                    delay_ms = skew.delay_ms,
-                    "NTP clock check passed"
-                );
-            } else {
-                tracing::error!(
-                    offset_ms = skew.offset_ms,
-                    max_skew_ms = MAX_CLOCK_SKEW_MS,
-                    "clock skew exceeds safe threshold — refusing to start"
-                );
-                return;
+    if let Some(ref dir) = cfg.logging.directory {
+        let file_appender = tracing_appender::rolling::daily(dir, "ta-bot.log");
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        // Keep guard alive for the process lifetime
+        Box::leak(Box::new(_guard));
+
+        match cfg.logging.format.as_str() {
+            "json" => {
+                let subscriber = tracing_subscriber::fmt()
+                    .json()
+                    .with_env_filter(filter)
+                    .with_writer(non_blocking)
+                    .finish();
+                let _ = tracing::subscriber::set_global_default(subscriber);
+            }
+            _ => {
+                let subscriber = tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_writer(non_blocking)
+                    .finish();
+                let _ = tracing::subscriber::set_global_default(subscriber);
             }
         }
-        Ok(None) => {
-            tracing::warn!("NTP check failed (network or DNS) — proceeding without verification");
-        }
-        Err(e) => {
-            tracing::warn!("NTP check task failed: {e} — proceeding");
-        }
+    } else {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .try_init();
     }
+}
 
-    // Initialize feed with health check config
+async fn run_loop(app_cfg: AppConfig) {
+    // Initialize feed
     let mut feed = FeedEngine::with_config(FeedConfig {
-        message_timeout: Duration::from_secs(10),
-        ..Default::default()
+        endpoint: app_cfg.endpoint.clone(),
+        message_timeout: app_cfg.message_timeout(),
     });
 
-    // Initialize detection engine
-    let detect = DetectionEngine::new(DetectionConfig {
-        min_profit_bps: 10.0,
-        max_legs: 3,
-        fee_taker_bps: 10.0,
-        max_data_age: Duration::from_millis(200),
-    });
-
-    // Initialize execution engine
-    let mut exec = ExecEngine::new(Default::default());
-
-    // Clone Arc readers for book and graph (shared with feed)
-    let book_reader = feed.book_reader();
-    let graph_reader = feed.graph_reader();
+    // Subscribe to configured symbols
+    for sym_str in &app_cfg.symbols {
+        let symbol = SymbolId {
+            venue: "BINANCE".into(),
+            symbol: sym_str.to_string(),
+        };
+        feed.subscribe(symbol).await;
+    }
 
     // Connect to the exchange
     feed.connect().await;
 
-    let mut health_interval = tokio::time::interval(Duration::from_secs(5));
-    let mut timeout_interval = tokio::time::interval(Duration::from_secs(2));
-    let mut detect_interval = tokio::time::interval(Duration::from_millis(50));
+    // Initialize detection engine
+    let detect = DetectionEngine::new(DetectionConfig {
+        min_profit_bps: app_cfg.detect.min_profit_bps,
+        max_legs: app_cfg.detect.max_legs,
+        fee_taker_bps: app_cfg.detect.fee_taker_bps,
+        max_data_age: app_cfg.max_data_age(),
+    });
+
+    // Initialize execution engine (no-op if no credentials)
+    let mut exec = ExecEngine::new(Default::default());
+
+    let book_reader = feed.book_reader();
+    let graph_reader = feed.graph_reader();
+
+    let mut health_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    let mut timeout_interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    let mut poll_interval = tokio::time::interval(app_cfg.poll_interval());
 
     loop {
         tokio::select! {
             _ = health_interval.tick() => {
                 let health = feed.health();
+                metrics::metrics().feed_connected.set(if health.connected { 1.0 } else { 0.0 });
                 if health.degraded {
                     tracing::warn!(
                         connected = health.connected,
                         stale = health.last_message_at.map(|t| t.elapsed().as_secs()).unwrap_or(99),
                         errors = health.consecutive_errors,
+                        books = feed.counters().books,
+                        trades = feed.counters().trades,
                         "feed degraded"
                     );
                 } else if health.connected {
@@ -117,34 +153,38 @@ async fn run_loop() {
                     tracing::warn!("{} order(s) timed out", timeouts.len());
                 }
             }
-            _ = detect_interval.tick() => {
-                // 1. Poll feed for new market data
+            _ = poll_interval.tick() => {
                 feed.poll().await;
+                metrics::metrics().polls_total.inc();
 
-                // 2. Snapshot the graph for detection
                 let graph_snap = graph_reader.read().await;
+                let detect_start = Instant::now();
                 let opportunities = detect.detect(&graph_snap);
+                let detect_elapsed = detect_start.elapsed();
+                metrics::metrics().detection_duration
+                    .with_label_values(&[])
+                    .observe(detect_elapsed.as_secs_f64());
                 drop(graph_snap);
 
                 if opportunities.is_empty() {
                     continue;
                 }
 
-                // 3. Snapshot books for price enrichment
+                metrics::metrics().opportunities_found.inc_by(opportunities.len() as f64);
+
                 let books_snap = book_reader.read().await;
 
                 for opp in opportunities {
                     let enriched = enrich_opportunity(&opp, &books_snap, 1_000_000);
 
-                    // Skip if any leg has no price or size
                     if enriched.routes.iter().any(|l| l.price == 0 || l.size == 0) {
-                        tracing::debug!(?enriched.triangle, "skipping opportunity — missing price/size");
+                        tracing::debug!(?enriched.triangle, "skipping — missing price/size");
                         continue;
                     }
 
-                    // 4. Execute
                     match exec.execute_opportunity(&enriched, &books_snap) {
                         Ok(result) => {
+                            metrics::metrics().opportunities_executed.inc();
                             tracing::info!(
                                 profit_bps = enriched.expected_profit_bps,
                                 ?result,
@@ -152,6 +192,7 @@ async fn run_loop() {
                             );
                         }
                         Err(e) => {
+                            metrics::metrics().executions_failed.inc();
                             tracing::error!(error = %e, "execution failed");
                         }
                     }
@@ -161,12 +202,12 @@ async fn run_loop() {
     }
 }
 
-/// Fill in `price` and `size` for each leg from the current top-of-book.
 fn enrich_opportunity(
-    opp: &ArbitrageOpportunity,
-    books: &FxHashMap<SymbolId, BookSnapshot>,
+    opp: &ta_core::ArbitrageOpportunity,
+    books: &rustc_hash::FxHashMap<of_core::SymbolId, of_core::BookSnapshot>,
     max_size: i64,
-) -> ArbitrageOpportunity {
+) -> ta_core::ArbitrageOpportunity {
+    use ta_core::OrderSide;
     let mut routes = opp.routes.clone();
     for leg in &mut routes {
         if let Some(book) = books.get(&leg.symbol) {
@@ -186,7 +227,7 @@ fn enrich_opportunity(
             }
         }
     }
-    ArbitrageOpportunity {
+    ta_core::ArbitrageOpportunity {
         triangle: opp.triangle.clone(),
         routes,
         expected_profit_bps: opp.expected_profit_bps,
@@ -204,12 +245,14 @@ async fn drain() {
     tracing::info!("pending state drained");
 }
 
-fn load_config(args: &cli::Cli) -> Result<Config, ConfigError> {
+fn load_config(args: &cli::Cli) -> Result<Option<Config>, ConfigError> {
     #[cfg(feature = "aws")]
     if let Some(secret_name) = &args.aws_secret {
         tracing::info!("loading config from AWS Secrets Manager");
         let rt = tokio::runtime::Runtime::new().unwrap();
-        return rt.block_on(async { Config::from_aws(secret_name).await });
+        return rt.block_on(async {
+            Config::from_aws(secret_name).await.map(Some)
+        });
     }
 
     #[cfg(not(feature = "aws"))]
@@ -217,6 +260,12 @@ fn load_config(args: &cli::Cli) -> Result<Config, ConfigError> {
         tracing::warn!("aws-secret flag requires 'aws' feature: cargo build --features aws");
     }
 
-    tracing::info!("loading config from environment");
-    Config::from_env(args.env_file.as_deref())
+    // Make credentials optional — allow running without API keys for read-only mode
+    if let Ok(cfg) = Config::from_env(args.env_file.as_deref()) {
+        tracing::info!("exchange credentials loaded from environment");
+        return Ok(Some(cfg));
+    }
+
+    tracing::info!("no credentials found — running in read-only mode");
+    Ok(None)
 }
