@@ -224,6 +224,67 @@ impl BacktestResult {
         }
         self.profitable_trades as f64 / self.total_executed as f64
     }
+
+    /// Write trades as JSONL consumable by the Python ta-analysis package.
+    pub fn write_jsonl(&self, path: &str) -> Result<(), std::io::Error> {
+        use std::io::Write;
+        let file = std::fs::File::create(path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        for trade in &self.trades {
+            let row = BacktestJsonRow::from_trade(trade, self.total_fees_paid);
+            let line = serde_json::to_string(&row).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::Other, e)
+            })?;
+            writeln!(writer, "{}", line)?;
+        }
+        writer.flush()?;
+        Ok(())
+    }
+}
+
+/// Flat JSON row matching Python ta_analysis.models.RawBacktestRow.
+#[derive(serde::Serialize)]
+pub struct BacktestJsonRow {
+    pub ts_ns: u64,
+    pub leg_a_symbol: String,
+    pub leg_b_symbol: String,
+    pub leg_c_symbol: String,
+    pub profit_bps: f64,
+    pub expected_profit_bps: f64,
+    pub executed: bool,
+    pub fill_price_a: Option<f64>,
+    pub fill_price_b: Option<f64>,
+    pub fill_price_c: Option<f64>,
+    pub pnl_usdt: Option<f64>,
+}
+
+impl BacktestJsonRow {
+    pub fn from_trade(trade: &SimulatedTrade, _total_fees: i64) -> Self {
+        let legs: Vec<&str> = trade
+            .legs
+            .iter()
+            .map(|l| l.symbol.symbol.as_str())
+            .collect();
+        let fill_prices: Vec<Option<f64>> = trade
+            .legs
+            .iter()
+            .map(|l| Some(l.fill.avg_price as f64))
+            .collect();
+
+        BacktestJsonRow {
+            ts_ns: trade.ts_ns,
+            leg_a_symbol: legs.first().copied().unwrap_or("").to_string(),
+            leg_b_symbol: legs.get(1).copied().unwrap_or("").to_string(),
+            leg_c_symbol: legs.get(2).copied().unwrap_or("").to_string(),
+            profit_bps: trade.profit_bps,
+            expected_profit_bps: trade.profit_bps, // close approximation in simulation
+            executed: true,
+            fill_price_a: fill_prices.first().copied().flatten(),
+            fill_price_b: fill_prices.get(1).copied().flatten(),
+            fill_price_c: fill_prices.get(2).copied().flatten(),
+            pnl_usdt: Some(trade.profit_quote),
+        }
+    }
 }
 
 /// Engine that replays historical tick data, runs triangular arbitrage detection,
@@ -269,6 +330,10 @@ impl BacktestEngine {
     pub fn load_ticks(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
         self.sim = SimulatedExchange::from_jsonl(path)?;
         Ok(())
+    }
+
+    pub fn tick_count(&self) -> usize {
+        self.sim.len()
     }
 
     /// Run the full backtest over the loaded tick data.
@@ -755,6 +820,76 @@ mod tests {
             result.total_opportunities_found
         );
         assert_eq!(result.total_ticks, 3);
+    }
+
+    #[test]
+    fn test_backtest_jsonl_output() {
+        let mut engine = BacktestEngine::new(BacktestConfig {
+            min_profit_bps: 0.01,
+            order_size: 100,
+            starting_capital: 10_000.0,
+            detect_interval_ticks: 1,
+            fill_model: FillModel {
+                slippage: SlippageModel::None,
+                taker_fee_bps: 0.0,
+                ..Default::default()
+            },
+            fee_taker_bps: 0.0,
+            max_data_age_ms: 60_000,
+            symbols: vec![
+                SymbolMapping {
+                    symbol: "BTCUSDT".into(),
+                    venue: "BINANCE".into(),
+                    base: "BTC".into(),
+                    quote: "USDT".into(),
+                },
+                SymbolMapping {
+                    symbol: "ETHBTC".into(),
+                    venue: "BINANCE".into(),
+                    base: "ETH".into(),
+                    quote: "BTC".into(),
+                },
+                SymbolMapping {
+                    symbol: "ETHUSDT".into(),
+                    venue: "BINANCE".into(),
+                    base: "ETH".into(),
+                    quote: "USDT".into(),
+                },
+            ],
+        });
+
+        let ticks = vec![
+            Tick {
+                ts_ns: 1,
+                symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+                bid: 100, ask: 101, last_price: 100, last_size: 100,
+            },
+            Tick {
+                ts_ns: 2,
+                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() },
+                bid: 50, ask: 51, last_price: 50, last_size: 100,
+            },
+            Tick {
+                ts_ns: 3,
+                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() },
+                bid: 100, ask: 101, last_price: 100, last_size: 100,
+            },
+        ];
+
+        engine.sim = SimulatedExchange::new(ticks);
+        let result = engine.run();
+
+        let path = "/tmp/test_backtest.jsonl";
+        result.write_jsonl(path).unwrap();
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(!content.is_empty(), "JSONL output should not be empty");
+        let first_line: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(first_line["executed"], true);
+        assert!(first_line["profit_bps"].as_f64().unwrap() > 0.0);
+        assert_eq!(first_line["leg_a_symbol"], "ETHBTC");
+        assert_eq!(first_line["leg_b_symbol"], "BTCUSDT");
+        assert_eq!(first_line["leg_c_symbol"], "ETHUSDT");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

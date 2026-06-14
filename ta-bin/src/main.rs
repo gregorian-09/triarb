@@ -1,3 +1,4 @@
+mod backtest;
 mod cli;
 mod config;
 mod metrics;
@@ -16,6 +17,13 @@ use tokio::signal;
 fn main() -> anyhow::Result<()> {
     let args = cli::Cli::parse();
 
+    match args.command.as_ref().unwrap_or(&cli::Command::Live) {
+        cli::Command::Live => run_live(args),
+        cli::Command::Backtest(bt_args) => backtest::run_backtest(bt_args),
+    }
+}
+
+fn run_live(args: cli::Cli) -> anyhow::Result<()> {
     // Load app config (symbols, endpoints, logging, etc.)
     let app_cfg = match &args.config {
         Some(path) => AppConfig::from_file(path.as_path())?,
