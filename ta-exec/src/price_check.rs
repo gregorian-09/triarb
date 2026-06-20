@@ -17,16 +17,9 @@ impl Default for PriceTolerance {
 }
 
 /// Checks that current market conditions still support a detected arb leg.
+#[derive(Default)]
 pub struct PriceChecker {
     pub tolerance: PriceTolerance,
-}
-
-impl Default for PriceChecker {
-    fn default() -> Self {
-        Self {
-            tolerance: PriceTolerance::default(),
-        }
-    }
 }
 
 impl PriceChecker {
@@ -109,6 +102,7 @@ impl std::fmt::Display for PriceCheckFailure {
 }
 
 #[cfg(test)]
+#[allow(clippy::inconsistent_digit_grouping)]
 mod tests {
     use super::*;
     use of_core::{BookLevel, BookSnapshot, SymbolId};

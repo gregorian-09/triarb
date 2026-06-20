@@ -344,7 +344,7 @@ impl ExecEngine {
 
     fn periodic_gc(&mut self) {
         self.gc_counter += 1;
-        if self.gc_counter % 100 == 0 {
+        if self.gc_counter.is_multiple_of(100) {
             self.dedup.gc();
         }
     }
@@ -431,6 +431,7 @@ pub enum OpportunityResult {
 }
 
 #[cfg(test)]
+#[allow(clippy::inconsistent_digit_grouping)]
 mod tests {
     use super::*;
     use ta_core::{of_core::SymbolId, OrderSide, RouteLeg, Triangle};

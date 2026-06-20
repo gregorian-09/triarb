@@ -53,7 +53,7 @@ async fn main() {
             break;
         }
 
-        if cycle % 10 != 0 {
+        if !cycle.is_multiple_of(10) {
             continue;
         }
 

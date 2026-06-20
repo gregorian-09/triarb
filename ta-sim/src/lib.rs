@@ -241,7 +241,7 @@ impl BacktestResult {
         for trade in &self.trades {
             let row = BacktestJsonRow::from_trade(trade, self.total_fees_paid);
             let line = serde_json::to_string(&row)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                .map_err(std::io::Error::other)?;
             writeln!(writer, "{}", line)?;
         }
         writer.flush()?;
@@ -359,7 +359,7 @@ impl BacktestEngine {
                 self.graph.set_symbol_for(base, quote, symbol.clone());
             }
 
-            if self.sim.position() % self.config.detect_interval_ticks != 0 {
+            if !self.sim.position().is_multiple_of(self.config.detect_interval_ticks) {
                 continue;
             }
 
@@ -368,7 +368,7 @@ impl BacktestEngine {
                 if opp.expected_profit_bps <= 0.0 {
                     continue;
                 }
-                if let Some(trade) = self.simulate_trade(&opp) {
+                if let Some(trade) = self.simulate_trade(opp) {
                     trades.push(trade);
                 }
             }
@@ -635,6 +635,10 @@ impl SimulatedExchange {
         self.ticks.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.ticks.is_empty()
+    }
+
     pub fn position(&self) -> usize {
         self.current_idx
     }
@@ -645,6 +649,7 @@ impl SimulatedExchange {
 }
 
 #[cfg(test)]
+#[allow(clippy::inconsistent_digit_grouping)]
 mod tests {
     use super::*;
     use of_core::BookLevel;

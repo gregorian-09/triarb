@@ -108,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
             written += 1;
         }
 
-        if cycle % 10 == 0 {
+        if cycle.is_multiple_of(10) {
             tracing::info!(
                 "t={:3}s  cycles={}  ticks={}",
                 elapsed.as_secs(),

@@ -26,6 +26,7 @@ pub fn hedge_spec(opp: &ArbitrageOpportunity, leg_idx: usize) -> Option<HedgeSpe
 }
 
 #[cfg(test)]
+#[allow(clippy::inconsistent_digit_grouping)]
 mod tests {
     use super::*;
     use ta_core::{RouteLeg, Triangle};

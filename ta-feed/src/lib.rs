@@ -383,6 +383,7 @@ fn parse_currency(symbol: &SymbolId) -> (String, String) {
 }
 
 #[cfg(test)]
+#[allow(clippy::inconsistent_digit_grouping)]
 mod tests {
     use super::*;
     use of_core::BookAction;

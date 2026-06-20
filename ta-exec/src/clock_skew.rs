@@ -86,7 +86,7 @@ fn ntp_now() -> u64 {
 /// Convert an NTP 64-bit timestamp to nanoseconds since Unix epoch.
 fn ntp_to_nanos(raw: u64) -> u64 {
     let secs = (raw >> 32).saturating_sub(NTP_UNIX_OFFSET);
-    let frac_ns = (((raw & 0xFFFF_FFFF) as u128) * 1_000_000_000 >> 32) as u64;
+    let frac_ns = ((((raw & 0xFFFF_FFFF) as u128) * 1_000_000_000) >> 32) as u64;
     secs * 1_000_000_000 + frac_ns
 }
 
@@ -112,7 +112,7 @@ mod tests {
         let now = ntp_now();
         let back = ntp_to_nanos(now);
         let sys = nanos();
-        let diff = if back > sys { back - sys } else { sys - back };
+        let diff = back.abs_diff(sys);
         assert!(diff < 10_000_000, "NTP conversion off by {diff}ns");
     }
 

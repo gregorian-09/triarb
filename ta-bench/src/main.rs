@@ -184,9 +184,9 @@ fn feed_book_update_new_symbol(bencher: Bencher) {
 
     bencher.bench(|| {
         ta_feed::FeedEngine::bench_apply_book_update(
-            &mut *books.lock().unwrap(),
-            &mut *graph.lock().unwrap(),
-            book(symbol.clone(), of_core::Side::Bid, 0, 50000_00_000_000, 100),
+            &mut books.lock().unwrap(),
+            &mut graph.lock().unwrap(),
+            book(symbol.clone(), of_core::Side::Bid, 0, 5_000_000_000_000, 100),
             1_000_000.0,
         );
     });
@@ -204,25 +204,25 @@ fn feed_book_update_existing_10_levels(bencher: Bencher) {
 
     for level in 0u16..10 {
         ta_feed::FeedEngine::bench_apply_book_update(
-            &mut *books.lock().unwrap(),
-            &mut *graph.lock().unwrap(),
+            &mut books.lock().unwrap(),
+            &mut graph.lock().unwrap(),
             book(
                 symbol.clone(),
                 of_core::Side::Bid,
                 level,
-                50000_00_000_000 + (level as i64) * 100,
+                5_000_000_000_000 + (level as i64) * 100,
                 100,
             ),
             1_000_000.0,
         );
         ta_feed::FeedEngine::bench_apply_book_update(
-            &mut *books.lock().unwrap(),
-            &mut *graph.lock().unwrap(),
+            &mut books.lock().unwrap(),
+            &mut graph.lock().unwrap(),
             book(
                 symbol.clone(),
                 of_core::Side::Ask,
                 level,
-                50001_00_000_000 + (level as i64) * 100,
+                5_001_000_000_000 + (level as i64) * 100,
                 100,
             ),
             1_000_000.0,
@@ -231,9 +231,9 @@ fn feed_book_update_existing_10_levels(bencher: Bencher) {
 
     bencher.bench(|| {
         ta_feed::FeedEngine::bench_apply_book_update(
-            &mut *books.lock().unwrap(),
-            &mut *graph.lock().unwrap(),
-            book(symbol.clone(), of_core::Side::Bid, 0, 50002_00_000_000, 150),
+            &mut books.lock().unwrap(),
+            &mut graph.lock().unwrap(),
+            book(symbol.clone(), of_core::Side::Bid, 0, 5_002_000_000_000, 150),
             1_000_000.0,
         );
     });

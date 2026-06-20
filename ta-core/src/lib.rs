@@ -157,11 +157,11 @@ impl FillState {
     }
 
     pub fn has_partial_fill(&self) -> bool {
-        self.legs.iter().any(|s| *s == LegFillStatus::Filled) && !self.is_fully_filled()
+        self.legs.contains(&LegFillStatus::Filled) && !self.is_fully_filled()
     }
 
     pub fn has_failure(&self) -> bool {
-        self.legs.iter().any(|s| *s == LegFillStatus::Failed)
+        self.legs.contains(&LegFillStatus::Failed)
     }
 
     /// Returns true if this opportunity needs a rollback:
@@ -181,6 +181,12 @@ pub struct ExchangeRateGraph {
     /// Maps (from_idx, to_idx) → the exchange symbol that produced this rate.
     /// Stored as {base}{quote} in the symbol name, consistent with parse_currency.
     symbol_map: HashMap<(usize, usize), SymbolId>,
+}
+
+impl Default for ExchangeRateGraph {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ExchangeRateGraph {
@@ -523,7 +529,7 @@ mod tests {
         // ETHUSDT: bid=5000, ask=5100
         g.set_rate(&"ETH".into(), &"USDT".into(), 5000.0, 5100.0);
 
-        let ops = g.detect();
+        let _ops = g.detect();
         // With consistent cross-rates (50 BTC/ETH × 100 USDT/BTC = 5000 USDT/ETH matches direct)
         // there should be no arbitrage
     }
