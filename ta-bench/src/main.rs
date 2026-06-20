@@ -186,7 +186,13 @@ fn feed_book_update_new_symbol(bencher: Bencher) {
         ta_feed::FeedEngine::bench_apply_book_update(
             &mut books.lock().unwrap(),
             &mut graph.lock().unwrap(),
-            book(symbol.clone(), of_core::Side::Bid, 0, 5_000_000_000_000, 100),
+            book(
+                symbol.clone(),
+                of_core::Side::Bid,
+                0,
+                5_000_000_000_000,
+                100,
+            ),
             1_000_000.0,
         );
     });
@@ -233,7 +239,13 @@ fn feed_book_update_existing_10_levels(bencher: Bencher) {
         ta_feed::FeedEngine::bench_apply_book_update(
             &mut books.lock().unwrap(),
             &mut graph.lock().unwrap(),
-            book(symbol.clone(), of_core::Side::Bid, 0, 5_002_000_000_000, 150),
+            book(
+                symbol.clone(),
+                of_core::Side::Bid,
+                0,
+                5_002_000_000_000,
+                150,
+            ),
             1_000_000.0,
         );
     });

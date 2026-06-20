@@ -240,8 +240,7 @@ impl BacktestResult {
         let mut writer = std::io::BufWriter::new(file);
         for trade in &self.trades {
             let row = BacktestJsonRow::from_trade(trade, self.total_fees_paid);
-            let line = serde_json::to_string(&row)
-                .map_err(std::io::Error::other)?;
+            let line = serde_json::to_string(&row).map_err(std::io::Error::other)?;
             writeln!(writer, "{}", line)?;
         }
         writer.flush()?;
@@ -359,7 +358,11 @@ impl BacktestEngine {
                 self.graph.set_symbol_for(base, quote, symbol.clone());
             }
 
-            if !self.sim.position().is_multiple_of(self.config.detect_interval_ticks) {
+            if !self
+                .sim
+                .position()
+                .is_multiple_of(self.config.detect_interval_ticks)
+            {
                 continue;
             }
 
