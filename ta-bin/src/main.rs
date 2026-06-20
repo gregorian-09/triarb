@@ -46,13 +46,12 @@ fn run_live(args: cli::Cli) -> anyhow::Result<()> {
     tracing::info!(symbols = ?app_cfg.symbols, endpoint = ?app_cfg.endpoint, "config");
 
     // Start metrics + health HTTP server
-    let metrics_port = app_cfg.metrics_port;
-    tokio::spawn(async move {
-        serve_metrics(metrics_port).await;
-    });
-
     let rt = tokio::runtime::Runtime::new()?;
+    let metrics_port = app_cfg.metrics_port;
     rt.block_on(async {
+        tokio::spawn(async move {
+            serve_metrics(metrics_port).await;
+        });
         tokio::select! {
             _ = run_loop(app_cfg) => {}
             _ = shutdown_signal() => {
@@ -106,6 +105,8 @@ async fn run_loop(app_cfg: AppConfig) {
         endpoint: app_cfg.endpoint.clone(),
         message_timeout: app_cfg.message_timeout(),
         price_scale: 1_000_000.0,
+        reconnect_base_ms: app_cfg.feed.reconnect_base_ms,
+        reconnect_max_ms: app_cfg.feed.reconnect_max_ms,
     });
 
     // Subscribe to configured symbols
@@ -137,12 +138,17 @@ async fn run_loop(app_cfg: AppConfig) {
     let mut health_interval = tokio::time::interval(std::time::Duration::from_secs(5));
     let mut timeout_interval = tokio::time::interval(std::time::Duration::from_secs(2));
     let mut poll_interval = tokio::time::interval(app_cfg.poll_interval());
+    let mut prev_books: u64 = 0;
+    let mut prev_trades: u64 = 0;
 
     loop {
         tokio::select! {
             _ = health_interval.tick() => {
                 let health = feed.health();
                 metrics::metrics().feed_connected.set(if health.connected { 1.0 } else { 0.0 });
+                if health.consecutive_errors > 0 {
+                    metrics::metrics().feed_reconnects.inc();
+                }
                 if health.degraded {
                     tracing::warn!(
                         connected = health.connected,
@@ -165,6 +171,17 @@ async fn run_loop(app_cfg: AppConfig) {
             _ = poll_interval.tick() => {
                 feed.poll().await;
                 metrics::metrics().polls_total.inc();
+                let cnt = feed.counters();
+                let books_delta = cnt.books - prev_books;
+                let trades_delta = cnt.trades - prev_trades;
+                if books_delta > 0 {
+                    metrics::metrics().books_received.inc_by(books_delta as f64);
+                }
+                if trades_delta > 0 {
+                    metrics::metrics().trades_received.inc_by(trades_delta as f64);
+                }
+                prev_books = cnt.books;
+                prev_trades = cnt.trades;
 
                 let graph_snap = graph_reader.read().await;
                 let detect_start = Instant::now();

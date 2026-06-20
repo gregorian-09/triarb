@@ -19,6 +19,10 @@ pub struct FeedConfig {
     /// before inserting into the exchange-rate graph.  Binance adapter prices
     /// typically carry a 1 000 000× scale factor for USDT pairs.
     pub price_scale: f64,
+    /// Base reconnection delay in milliseconds (exponential backoff).
+    pub reconnect_base_ms: u64,
+    /// Maximum reconnection delay in milliseconds.
+    pub reconnect_max_ms: u64,
 }
 
 impl Default for FeedConfig {
@@ -27,6 +31,8 @@ impl Default for FeedConfig {
             endpoint: None,
             message_timeout: Duration::from_secs(10),
             price_scale: 1_000_000.0,
+            reconnect_base_ms: DEFAULT_RECONNECT_BASE_MS,
+            reconnect_max_ms: DEFAULT_RECONNECT_MAX_MS,
         }
     }
 }
@@ -50,8 +56,8 @@ impl FeedHealth {
     }
 }
 
-const RECONNECT_BASE_MS: u64 = 250;
-const RECONNECT_MAX_MS: u64 = 30_000;
+pub(crate) const DEFAULT_RECONNECT_BASE_MS: u64 = 250;
+pub(crate) const DEFAULT_RECONNECT_MAX_MS: u64 = 30_000;
 
 #[derive(Default)]
 pub struct FeedCounters {
@@ -185,8 +191,9 @@ impl FeedEngine {
 
     fn schedule_reconnect(&mut self) {
         self.reconnect_attempt = self.reconnect_attempt.saturating_add(1);
-        let delay = (RECONNECT_BASE_MS.saturating_mul(1u64 << self.reconnect_attempt.min(7)))
-            .min(RECONNECT_MAX_MS);
+        let base = self.config.reconnect_base_ms;
+        let max = self.config.reconnect_max_ms;
+        let delay = (base.saturating_mul(1u64 << self.reconnect_attempt.min(7))).min(max);
         self.next_reconnect_at = Some(Instant::now() + Duration::from_millis(delay));
         tracing::warn!(
             attempt = self.reconnect_attempt,
