@@ -37,9 +37,18 @@ impl Default for RiskConfig {
 
 #[derive(Debug)]
 pub enum RiskRejection {
-    CircuitBreakerActive { remaining_secs: u64 },
-    DailyTradeCapExceeded { trades: u32, max: u32 },
-    MaxNotionalExceeded { symbol: SymbolId, current: i64, max: i64 },
+    CircuitBreakerActive {
+        remaining_secs: u64,
+    },
+    DailyTradeCapExceeded {
+        trades: u32,
+        max: u32,
+    },
+    MaxNotionalExceeded {
+        symbol: SymbolId,
+        current: i64,
+        max: i64,
+    },
 }
 
 impl std::fmt::Display for RiskRejection {
@@ -51,7 +60,11 @@ impl std::fmt::Display for RiskRejection {
             RiskRejection::DailyTradeCapExceeded { trades, max } => {
                 write!(f, "daily trade cap exceeded: {trades}/{max}")
             }
-            RiskRejection::MaxNotionalExceeded { symbol, current, max } => {
+            RiskRejection::MaxNotionalExceeded {
+                symbol,
+                current,
+                max,
+            } => {
                 write!(f, "max notional exceeded for {symbol:?}: {current}/{max}")
             }
         }
@@ -185,8 +198,17 @@ mod tests {
         });
         rc.record_failure();
         rc.record_failure();
-        rc.record_success(100, &SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() });
-        assert!(rc.check().is_ok(), "success should reset consecutive failures");
+        rc.record_success(
+            100,
+            &SymbolId {
+                venue: "BINANCE".into(),
+                symbol: "BTCUSDT".into(),
+            },
+        );
+        assert!(
+            rc.check().is_ok(),
+            "success should reset consecutive failures"
+        );
     }
 
     #[test]
@@ -197,7 +219,13 @@ mod tests {
             ..Default::default()
         });
         for _ in 0..5 {
-            rc.record_success(100, &SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() });
+            rc.record_success(
+                100,
+                &SymbolId {
+                    venue: "BINANCE".into(),
+                    symbol: "BTCUSDT".into(),
+                },
+            );
         }
         assert!(rc.check().is_err());
         assert!(matches!(
@@ -212,7 +240,10 @@ mod tests {
             max_notional_per_symbol: 1000,
             ..Default::default()
         });
-        let sym = SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() };
+        let sym = SymbolId {
+            venue: "BINANCE".into(),
+            symbol: "BTCUSDT".into(),
+        };
         assert!(rc.check_symbol_notional(&sym, 500).is_ok());
         rc.record_success(500, &sym);
         // Now the running total is 500, so 600 would exceed the 1000 limit

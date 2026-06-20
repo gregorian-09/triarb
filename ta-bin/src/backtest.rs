@@ -104,9 +104,9 @@ pub fn run_backtest(args: &BacktestArgs) -> Result<()> {
                 .context("invalid slippage format, expected fixed=<bps>")?;
             SlippageModel::Fixed(bps)
         }
-        other => bail!(
-            "unknown slippage model '{other}', expected 'none', 'walk', or 'fixed=<bps>'"
-        ),
+        other => {
+            bail!("unknown slippage model '{other}', expected 'none', 'walk', or 'fixed=<bps>'")
+        }
     };
 
     let home = cfg

@@ -190,12 +190,12 @@ impl ExecEngine {
                 log.record_intent(&opp_id, venue, symbol, side);
             }
 
-                    match self.submit_leg(opp, leg_idx) {
-                        Ok(()) => {
-                            state.fill_leg(leg_idx);
-                            self.order_tracker.resolve_leg(&opp_id, leg_idx);
-                            self.risk.record_success(leg.size, &leg.symbol);
-                            if let Some(ref mut log) = self.journal {
+            match self.submit_leg(opp, leg_idx) {
+                Ok(()) => {
+                    state.fill_leg(leg_idx);
+                    self.order_tracker.resolve_leg(&opp_id, leg_idx);
+                    self.risk.record_success(leg.size, &leg.symbol);
+                    if let Some(ref mut log) = self.journal {
                         log.record_fill(
                             &opp_id,
                             leg_idx,

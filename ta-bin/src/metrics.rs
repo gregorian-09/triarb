@@ -1,4 +1,4 @@
-use axum::{Router, routing::get};
+use axum::{routing::get, Router};
 use prometheus::{
     register_counter, register_gauge, register_histogram_vec, Counter, Encoder, Gauge,
     HistogramVec, TextEncoder,
@@ -35,17 +35,11 @@ fn init_metrics() -> BotMetrics {
             "Opportunities executed"
         )
         .unwrap(),
-        executions_failed: register_counter!(
-            "exec_failures_total",
-            "Execution failures"
-        )
-        .unwrap(),
-        feed_reconnects: register_counter!(
-            "feed_reconnects_total",
-            "Feed reconnection attempts"
-        )
-        .unwrap(),
-        feed_connected: register_gauge!("feed_connected", "Feed connection state (1=connected)").unwrap(),
+        executions_failed: register_counter!("exec_failures_total", "Execution failures").unwrap(),
+        feed_reconnects: register_counter!("feed_reconnects_total", "Feed reconnection attempts")
+            .unwrap(),
+        feed_connected: register_gauge!("feed_connected", "Feed connection state (1=connected)")
+            .unwrap(),
         detection_duration: register_histogram_vec!(
             "detect_duration_seconds",
             "Detection latency in seconds",

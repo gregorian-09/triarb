@@ -44,7 +44,7 @@ pub enum SlippageModel {
 impl Default for FillModel {
     fn default() -> Self {
         Self {
-            latency_ns: 50_000, // 50µs
+            latency_ns: 50_000,  // 50µs
             taker_fee_bps: 10.0, // 10bps
             slippage: SlippageModel::Walk,
         }
@@ -122,8 +122,8 @@ impl FillModel {
             _ => avg_price,
         };
 
-        let fee_paid = (adjusted_avg as f64 * total_filled as f64 * self.taker_fee_bps / 10_000.0)
-            as i64;
+        let fee_paid =
+            (adjusted_avg as f64 * total_filled as f64 * self.taker_fee_bps / 10_000.0) as i64;
 
         FillResult {
             fills,
@@ -240,9 +240,8 @@ impl BacktestResult {
         let mut writer = std::io::BufWriter::new(file);
         for trade in &self.trades {
             let row = BacktestJsonRow::from_trade(trade, self.total_fees_paid);
-            let line = serde_json::to_string(&row).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, e)
-            })?;
+            let line = serde_json::to_string(&row)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             writeln!(writer, "{}", line)?;
         }
         writer.flush()?;
@@ -357,8 +356,7 @@ impl BacktestEngine {
                 let norm_bid = bid as f64 / self.config.price_divisor;
                 let norm_ask = ask as f64 / self.config.price_divisor;
                 self.graph.set_rate(base, quote, norm_bid, norm_ask);
-                self.graph
-                    .set_symbol_for(base, quote, symbol.clone());
+                self.graph.set_symbol_for(base, quote, symbol.clone());
             }
 
             if self.sim.position() % self.config.detect_interval_ticks != 0 {
@@ -391,14 +389,8 @@ impl BacktestEngine {
         } else {
             trades.iter().map(|t| t.profit_bps).sum::<f64>() / trades.len() as f64
         };
-        let max_profit = trades
-            .iter()
-            .map(|t| t.profit_bps)
-            .fold(0_f64, f64::max);
-        let max_loss = trades
-            .iter()
-            .map(|t| t.profit_bps)
-            .fold(0_f64, f64::min);
+        let max_profit = trades.iter().map(|t| t.profit_bps).fold(0_f64, f64::max);
+        let max_loss = trades.iter().map(|t| t.profit_bps).fold(0_f64, f64::min);
 
         BacktestResult {
             trades,
@@ -420,7 +412,10 @@ impl BacktestEngine {
     }
 
     /// Rotate the routes so the first leg's input currency matches home_currency.
-    fn normalize_routes(&self, opp: &ta_core::ArbitrageOpportunity) -> Option<Vec<ta_core::RouteLeg>> {
+    fn normalize_routes(
+        &self,
+        opp: &ta_core::ArbitrageOpportunity,
+    ) -> Option<Vec<ta_core::RouteLeg>> {
         let home = &self.config.home_currency;
         let n = opp.routes.len();
         if n == 0 {
@@ -447,10 +442,12 @@ impl BacktestEngine {
         }
         // Verify the cycle still closes (last output == first input == home)
         if let Some(last) = rotated.last() {
-            let last_output = self.currencies_for(&last.symbol).map(|(base, quote)| match last.side {
-                OrderSide::Buy => base.clone(),
-                OrderSide::Sell => quote.clone(),
-            });
+            let last_output =
+                self.currencies_for(&last.symbol)
+                    .map(|(base, quote)| match last.side {
+                        OrderSide::Buy => base.clone(),
+                        OrderSide::Sell => quote.clone(),
+                    });
             if last_output.as_ref() != Some(home) {
                 return None; // rotation broke the cycle
             }
@@ -654,16 +651,43 @@ mod tests {
 
     fn sample_book() -> BookSnapshot {
         BookSnapshot {
-            symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+            symbol: SymbolId {
+                venue: "BINANCE".into(),
+                symbol: "BTCUSDT".into(),
+            },
             bids: vec![
-                BookLevel { price: 100_000, size: 10_000, level: 0 },
-                BookLevel { price: 99_900, size: 20_000, level: 1 },
-                BookLevel { price: 99_800, size: 30_000, level: 2 },
+                BookLevel {
+                    price: 100_000,
+                    size: 10_000,
+                    level: 0,
+                },
+                BookLevel {
+                    price: 99_900,
+                    size: 20_000,
+                    level: 1,
+                },
+                BookLevel {
+                    price: 99_800,
+                    size: 30_000,
+                    level: 2,
+                },
             ],
             asks: vec![
-                BookLevel { price: 100_100, size: 10_000, level: 0 },
-                BookLevel { price: 100_200, size: 20_000, level: 1 },
-                BookLevel { price: 100_300, size: 30_000, level: 2 },
+                BookLevel {
+                    price: 100_100,
+                    size: 10_000,
+                    level: 0,
+                },
+                BookLevel {
+                    price: 100_200,
+                    size: 20_000,
+                    level: 1,
+                },
+                BookLevel {
+                    price: 100_300,
+                    size: 30_000,
+                    level: 2,
+                },
             ],
             last_sequence: 0,
             ts_exchange_ns: 0,
@@ -748,7 +772,10 @@ mod tests {
     fn test_fill_empty_book() {
         let model = FillModel::default();
         let book = BookSnapshot {
-            symbol: SymbolId { venue: "BINANCE".into(), symbol: "VOID".into() },
+            symbol: SymbolId {
+                venue: "BINANCE".into(),
+                symbol: "VOID".into(),
+            },
             bids: vec![],
             asks: vec![],
             last_sequence: 0,
@@ -846,7 +873,10 @@ mod tests {
         let ticks = vec![
             Tick {
                 ts_ns: 1,
-                symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+                symbol: SymbolId {
+                    venue: "BINANCE".into(),
+                    symbol: "BTCUSDT".into(),
+                },
                 bid: 100,
                 ask: 101,
                 last_price: 100,
@@ -854,7 +884,10 @@ mod tests {
             },
             Tick {
                 ts_ns: 1,
-                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() },
+                symbol: SymbolId {
+                    venue: "BINANCE".into(),
+                    symbol: "ETHBTC".into(),
+                },
                 bid: 50,
                 ask: 51,
                 last_price: 50,
@@ -862,7 +895,10 @@ mod tests {
             },
             Tick {
                 ts_ns: 1,
-                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() },
+                symbol: SymbolId {
+                    venue: "BINANCE".into(),
+                    symbol: "ETHUSDT".into(),
+                },
                 bid: 100,
                 ask: 101,
                 last_price: 100,
@@ -922,18 +958,36 @@ mod tests {
         let ticks = vec![
             Tick {
                 ts_ns: 1,
-                symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
-                bid: 100, ask: 101, last_price: 100, last_size: 100,
+                symbol: SymbolId {
+                    venue: "BINANCE".into(),
+                    symbol: "BTCUSDT".into(),
+                },
+                bid: 100,
+                ask: 101,
+                last_price: 100,
+                last_size: 100,
             },
             Tick {
                 ts_ns: 2,
-                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() },
-                bid: 50, ask: 51, last_price: 50, last_size: 100,
+                symbol: SymbolId {
+                    venue: "BINANCE".into(),
+                    symbol: "ETHBTC".into(),
+                },
+                bid: 50,
+                ask: 51,
+                last_price: 50,
+                last_size: 100,
             },
             Tick {
                 ts_ns: 3,
-                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() },
-                bid: 100, ask: 101, last_price: 100, last_size: 100,
+                symbol: SymbolId {
+                    venue: "BINANCE".into(),
+                    symbol: "ETHUSDT".into(),
+                },
+                bid: 100,
+                ask: 101,
+                last_price: 100,
+                last_size: 100,
             },
         ];
 
@@ -1002,7 +1056,10 @@ mod tests {
         let ticks = vec![
             Tick {
                 ts_ns: 1,
-                symbol: SymbolId { venue: "BINANCE".into(), symbol: "BTCUSDT".into() },
+                symbol: SymbolId {
+                    venue: "BINANCE".into(),
+                    symbol: "BTCUSDT".into(),
+                },
                 bid: 100,
                 ask: 101,
                 last_price: 100,
@@ -1010,7 +1067,10 @@ mod tests {
             },
             Tick {
                 ts_ns: 1,
-                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHBTC".into() },
+                symbol: SymbolId {
+                    venue: "BINANCE".into(),
+                    symbol: "ETHBTC".into(),
+                },
                 bid: 50,
                 ask: 51,
                 last_price: 50,
@@ -1018,7 +1078,10 @@ mod tests {
             },
             Tick {
                 ts_ns: 1,
-                symbol: SymbolId { venue: "BINANCE".into(), symbol: "ETHUSDT".into() },
+                symbol: SymbolId {
+                    venue: "BINANCE".into(),
+                    symbol: "ETHUSDT".into(),
+                },
                 bid: 4999,
                 ask: 5000,
                 last_price: 4999,

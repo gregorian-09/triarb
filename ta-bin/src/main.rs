@@ -93,9 +93,7 @@ fn init_logging(cfg: &AppConfig) {
             }
         }
     } else {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .try_init();
+        let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
     }
 }
 
@@ -276,9 +274,7 @@ fn load_config(args: &cli::Cli) -> Result<Option<Config>, ConfigError> {
     if let Some(secret_name) = &args.aws_secret {
         tracing::info!("loading config from AWS Secrets Manager");
         let rt = tokio::runtime::Runtime::new().unwrap();
-        return rt.block_on(async {
-            Config::from_aws(secret_name).await.map(Some)
-        });
+        return rt.block_on(async { Config::from_aws(secret_name).await.map(Some) });
     }
 
     #[cfg(not(feature = "aws"))]

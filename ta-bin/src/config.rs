@@ -70,11 +70,7 @@ impl Default for LoggingCfg {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            symbols: vec![
-                "BTCUSDT".into(),
-                "ETHUSDT".into(),
-                "ETHBTC".into(),
-            ],
+            symbols: vec!["BTCUSDT".into(), "ETHUSDT".into(), "ETHBTC".into()],
             endpoint: Some("wss://stream.binance.com:9443/ws".into()),
             feed: FeedCfg::default(),
             detect: DetectCfg::default(),

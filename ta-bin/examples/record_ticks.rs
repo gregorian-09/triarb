@@ -5,9 +5,9 @@
 //!
 //! No API keys required — uses Binance public WebSocket.
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
-use std::io::Write;
 
 use clap::Parser;
 use of_core::SymbolId;

@@ -87,7 +87,6 @@ async fn main() {
                 book.asks.len(),
             );
         }
-
     }
 
     tracing::info!(
