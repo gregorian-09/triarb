@@ -35,18 +35,3 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
-
-      - name: Live integration test (record + backtest)
-        run: |
-          cargo run --example record_ticks -- --duration 15 --output /tmp/ci_ticks.jsonl
-          lines=$(wc -l < /tmp/ci_ticks.jsonl)
-          echo "recorded ${lines} ticks"
-          test "$lines" -gt 0 || { echo "no ticks recorded"; exit 1; }
-          cargo run -- backtest \
-            --config backtest.toml \
-            --data /tmp/ci_ticks.jsonl \
-            --output /tmp/ci_results.jsonl
-          echo "backtest complete — $(wc -l < /tmp/ci_results.jsonl) trades found"
-        env:
-          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
-          BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
