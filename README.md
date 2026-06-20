@@ -4,53 +4,57 @@ Low-latency triangular arbitrage detection and execution system for cryptocurren
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                        ta-bin                           │
-│  CLI (clap), main loop, enrichment, metrics server      │
-├────┬──────────┬──────────┬──────────┬──────────┬────────┤
-│    │          │          │          │          │        │
-│    ▼          ▼          ▼          ▼          ▼        │
-│ ta-feed   ta-detect  ta-exec    ta-sim    ta-config     │
-│ FeedEng.  DetectEng. ExecEng.  Backtest  Config/.env   │
-│ WebSocket  SPFA      RiskCtrl  Engine    AWS Secrets   │
-│ →Books    ↓Triangle  Journal   FillModel                │
-│ →Graph    opps       Hedge     SimulatedExch.           │
-│    │          │          │                              │
-│    └──────────┴──────────┘                              │
-│                      │                                  │
-│                      ▼                                  │
-│                   ta-core                               │
-│  ExchangeRateGraph, OpportunityId, FillState, DedupTable│
-├─────────────────────────────────────────────────────────┤
-│           ta-bench (divan benchmarks)                   │
-├─────────────────────────────────────────────────────────┤
-│   ta-analysis (Python)          ta-dashboard (Java)     │
-│   pandas/plotly analysis        Spring Boot dashboard   │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-                  Prometheus + Grafana
-                 (metrics, alerting)
+```mermaid
+flowchart TB
+    subgraph HotPath["Rust Hot Path"]
+        TB[ta-bin<br/>CLI, main loop, enrichment, metrics]
+        TF[ta-feed<br/>FeedEngine, WebSocket→Books→Graph]
+        TD[ta-detect<br/>DetectionEngine, SPFA]
+        TE[ta-exec<br/>ExecEngine, RiskCtrl, Journal, Hedge]
+        TS[ta-sim<br/>BacktestEngine, FillModel, SimulatedExchange]
+        TC[ta-config<br/>Config from .env / AWS Secrets]
+        subgraph Core[ta-core<br/>ExchangeRateGraph, FillState, DedupTable]
+        end
+    end
+
+    subgraph Support["Support"]
+        TBENCH[ta-bench<br/>divan benchmarks]
+        TANAL[ta-analysis<br/>Python pandas/plotly]
+        TDASH[ta-dashboard<br/>Java Spring Boot]
+        PG[Prometheus + Grafana]
+    end
+
+    TF --> Core
+    TD --> Core
+    TE --> Core
+    TB --> TF & TD & TE & TC
+    TS --> Core & TF
+    PG --> TB
+    TB -.-> |HTTP /metrics| PG
+    TE -.-> |JSONL journal| TE
+    TB -.-> |Redis pub/sub| TDASH
+    TS -.-> |JSONL output| TANAL
 ```
 
 **Data flow (live mode):**
 
-```
-Exchange WebSocket
-  → ta-feed::FeedEngine.poll()
-    → BookSnapshot stored in FxHashMap
-    → ExchangeRateGraph updated (log-weighted rates, price-scaled)
-      → ta-detect::DetectionEngine.detect()
-        → SPFA negative-cycle detection
-        → min_profit_bps + fee filter
-        → Triangle + RouteLeg construction
-          → enrich_opportunity() (price/size from top-of-book)
-            → ta-exec::ExecEngine.execute_opportunity()
-              → dedup check → risk check → price check
-              → leg-by-leg Market/IoC submission
-              → partial-fill rollback (hedge)
-              → append-only JSONL journal
+```mermaid
+flowchart LR
+    WS[Exchange WebSocket] --> FE[ta-feed::FeedEngine.poll]
+    FE --> BS[BookSnapshot<br/>FxHashMap]
+    FE --> GR[ExchangeRateGraph<br/>log-weighted, price-scaled]
+    GR --> DE[ta-detect::DetectionEngine.detect]
+    DE --> SPFA[SPFA negative-cycle]
+    SPFA --> FILTER[min_profit_bps + fee filter]
+    FILTER --> TRI[Triangle + RouteLeg construction]
+    TRI --> ENRICH[enrich_opportunity<br/>price/size from top-of-book]
+    ENRICH --> EXEC[ta-exec::ExecEngine.execute_opportunity]
+    EXEC --> DEDUP[dedup check]
+    DEDUP --> RISK[risk check]
+    RISK --> PRICE[price check]
+    PRICE --> SUBMIT[leg-by-leg Market/IoC submission]
+    SUBMIT --> ROLLBACK[partial-fill rollback / hedge]
+    ROLLBACK --> JOURNAL[append-only JSONL journal]
 ```
 
 ## Quick Start
